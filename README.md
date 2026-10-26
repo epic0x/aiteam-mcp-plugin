@@ -11,6 +11,7 @@ Status: connector in `connector/`, relay in `relay/`; OAuth sign-in live on aite
 - Research and gap list: [docs/RESEARCH-2026-10-10.md](docs/RESEARCH-2026-10-10.md)
 - Reference implementation today: <son>.aiteam.space (Hermes `mcp serve` -> mcp-proxy -> OAuth gate -> Cloudflare Tunnel)
 - **Unified connector (MCP + session tools + messaging box):** [docs/UNIFIED-CONNECTOR.md](docs/UNIFIED-CONNECTOR.md), code in [connector/](connector/)
+- **Model and provider control:** `son_model_status`, `son_model_set_all`, `son_model_set_session`, `son_model_fallback_set`: [docs/MODEL-CONTROL.md](docs/MODEL-CONTROL.md). Gateway hook/image activation is required; merging does not roll any Son.
 - **Computer health: `ping`, `health`, `cleanup`** (live disk/memory/CPU/jobs, 24 h of samples, safe cleanup): [docs/HEALTH.md](docs/HEALTH.md)
 - **Discord: one thread per task** (post inside threads, rename/archive/lock tools, bot permissions): [docs/DISCORD-THREADS.md](docs/DISCORD-THREADS.md)
 - **Tools: full Hermes parity** (every tool the Son's agent can use, 146 on a live Son): [docs/TOOLS.md](docs/TOOLS.md), Son-side module [son/hermes_toolbox.py](son/hermes_toolbox.py)

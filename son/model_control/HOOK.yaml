@@ -1,0 +1,4 @@
+name: aiteam-model-control
+description: "Local-only socket (<HERMES_HOME>/mcp/model-control.sock, 0600) the aiteam MCP connector uses to read and switch this Son's model/provider (all sessions or one) and the fallback order. Validates against configured providers; never returns credentials."
+events:
+  - gateway:startup

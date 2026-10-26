@@ -24,6 +24,10 @@ Prompt `who_we_are` + resource `aiteam://who-we-are` (intro.py): the Sons' intro
   health                   read    live health of the Son's computer: disk, memory, swap, CPU, uptime, live sessions,
                                    scheduled jobs, last cleanup, status ok / warning / critical (host_health.py)
   cleanup                  write   run the fixed safe cleanup now (rebuildable files only; once per 10 minutes)
+  son_model_status         read    model + provider + fallback order, globally and per session (model_control.py)
+  son_model_set_all        write   set provider + model for ALL sessions of the Son
+  son_model_set_session    write   set / clear provider + model for ONE session (sessionKey/sessionId)
+  son_model_fallback_set   write   set the fallback order (optionally the primary too)
   github_*                 read+write  the Son's own `gh` CLI login, same permissions and same output as `gh` on the
                            Son (github_gh.py). ON by default; `"github": false` turns it off.
 
@@ -33,7 +37,9 @@ Config: JSON file (``--config``) or env ``AITEAM_CONNECTOR_CONFIG``:
    "passthrough": "all",                # "all" (default: full surface) | "session" (store listing) | "none"
    "discord": {"bot_token_env": "DISCORD_BOT_TOKEN"},  # optional: Discord messages_send via webhook (discord_relay.py)
    "telegram": {"bot_token_env": "TELEGRAM_BOT_TOKEN"},  # optional: Telegram topic control (telegram_control.py, free)
-   "github": {"timeout_s": 30}}        # optional: gh tool settings; GitHub is on unless "github": false
+   "github": {"timeout_s": 30},        # optional: gh tool settings; GitHub is on unless "github": false
+   "model_control": {"socket": "..."}} # optional: model tools socket (default <HERMES_HOME>/mcp/model-control.sock);
+                                       # false turns the model tools off
 Tokens live in env vars named by the config, never in the file.
 """
 from __future__ import annotations
@@ -54,6 +60,7 @@ from mcp import ClientSession
 from mcp.server.lowlevel import Server
 
 from .entitlements import CALLER, Entitlements
+from .model_control import MODEL_TOOLS, ModelControlClient, call_model_tool, model_tools
 from .github_gh import GITHUB_TOOLS, LEGACY_TOOLS, GhError, GhRunner, github_tools
 from .intro import INTRO, INTRO_URI, intro_prompt, intro_prompt_result, intro_resource
 from .usage_guide import GUIDE, INSTRUCTIONS, usage_guide_tool
@@ -422,8 +429,11 @@ class Connector:
     def __init__(self, sons: list[SonLink], passthrough: str = "all",
                  transport: Optional[httpx.AsyncBaseTransport] = None, discord=None, github: Any = True,
                  gh_runner: Optional[GhRunner] = None, telegram=None,
-                 entitlements: Optional[Entitlements] = None):
+                 entitlements: Optional[Entitlements] = None, model_control: Any = True):
         self.discord = discord
+        # Model / provider control (model_control.py): local socket into this Son's own Hermes gateway. On by default.
+        self.model_control = None if model_control in (False, None) else ModelControlClient(
+            (model_control or {}).get("socket") if isinstance(model_control, dict) else None)
         self.dtools = None
         if discord is not None:
             from .discord_tools import DiscordTools
@@ -468,7 +478,8 @@ class Connector:
         return types.Tool(name=t.name, title=t.title, description=desc, inputSchema=schema, annotations=t.annotations)
 
     async def list_tools(self) -> list[types.Tool]:
-        tools = [usage_guide_tool()] + native_tools(self.order) + health_tools(self.order) + (github_tools() if self.github else []) \
+        tools = [usage_guide_tool()] + native_tools(self.order) + health_tools(self.order) \
+            + (model_tools(self.order) if self.model_control else []) + (github_tools() if self.github else []) \
             + (discord_thread_tools() if self.discord else []) + (telegram_tools() if self.telegram else [])
         if self.dtools:
             from .discord_tools import discord_tools
@@ -506,6 +517,13 @@ class Connector:
                 return text(out, not ok)
             if name == "usage_guide":
                 return text(GUIDE)
+            if name in MODEL_TOOLS:
+                if not self.model_control:
+                    return text(f"Tool {name} is not enabled on this connector.", True)
+                target = args.pop("son", None) or self.order[0]
+                if target != self.order[0]:
+                    return text(f"Model tools reach only this connector's own Son ({self.order[0]}).", True)
+                return await call_model_tool(self.model_control, name, args, caller)
             if name in DISCORD_THREAD_TOOLS:
                 return await self._discord_thread(name, args)
             from .discord_tools import DISCORD_TOOLS as DISCORD_DIRECT, dump
@@ -860,7 +878,8 @@ def main(argv: Optional[list[str]] = None) -> None:
     logging.basicConfig(level=logging.INFO, stream=sys.stderr, format="%(asctime)s %(name)s %(message)s")
     sons, mode = load_config(a.config)
     raw = json.loads(open(a.config).read()) if a.config else json.loads(os.environ["AITEAM_CONNECTOR_CONFIG"])
-    conn = Connector(sons, mode, discord=load_discord(raw), github=raw.get("github", True), telegram=load_telegram(raw))
+    conn = Connector(sons, mode, discord=load_discord(raw), github=raw.get("github", True), telegram=load_telegram(raw),
+                     model_control=raw.get("model_control", True))
     if a.transport == "stdio":
         asyncio.run(serve_stdio(conn))
     else:
