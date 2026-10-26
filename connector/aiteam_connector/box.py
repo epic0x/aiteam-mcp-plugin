@@ -379,6 +379,15 @@ class Box:
     async def _ai(self, request: web.Request, method: str, path: str, with_body: bool,
                   label: Optional[str] = None) -> web.Response:
         c = self.caller_for(request)
+        # AI control is profile-wide, not caller-conversation-scoped. A token restricted to a
+        # different Son must never gain model/credential control merely by authenticating.
+        local_son = self.cfg.ai_control.get("son") if self.cfg.ai_control else None
+        if not local_son and len(self.cfg.sons) == 1:
+            local_son = next(iter(self.cfg.sons))
+        if not local_son or local_son not in self.cfg.sons:
+            return web.json_response({"error": "ai control needs an explicit local son"}, status=503)
+        if not c.may(local_son):
+            return web.json_response({"error": "caller not allowed on this son"}, status=403)
         body = await self._small_json(request) if with_body else None
         code, data = await self.ai.forward(method, path, body)
         log.info("ai control: caller=%s %s %s -> %d", c.id, method, label or path, code)  # never the bodies

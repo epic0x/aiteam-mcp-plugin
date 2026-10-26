@@ -94,6 +94,14 @@ AI_ROUTES = (("GET", "/v1/ai/status"), ("POST", "/v1/ai/model"), ("PUT", "/v1/ai
 
 
 # ------------------------------------------------------------------------------------------- box
+async def test_ai_routes_reject_token_for_another_son(aistack):
+    box_url, plugin, _ = aistack
+    async with httpx.AsyncClient() as c:
+        for method, path in AI_ROUTES:
+            r = await c.request(method, box_url + path, headers={"Authorization": f"Bearer {BOB}"}, json={})
+            assert r.status_code == 403
+    assert plugin.seen == []
+
 async def test_every_ai_route_needs_a_caller_token(aistack):
     box_url, plugin, _ = aistack
     async with httpx.AsyncClient() as c:
@@ -252,7 +260,7 @@ async def test_signin_start_chatgpt_and_keys(aistack):
     r = await conn.call("ai_signin_start", {"provider": "chatgpt"})
     t = r.content[0].text
     assert "1. Open https://auth.openai.com/codex/device and enter code ABCD-1234." in t
-    assert "Done: no code to paste." in t and "Optional" in t
+    assert "Done: no code to paste." in t and "follows the sign-in" not in t
     assert f"https://staging.aiteam.space/connect/ai/son-abc?t={TICKET}" in t
     assert _no_ticket(r.structuredContent) and r.structuredContent["user_code"] == "ABCD-1234"
     for prov in ("anthropic-key", "openai-key"):

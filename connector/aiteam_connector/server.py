@@ -484,7 +484,7 @@ def ai_tools(son_names: list[str]) -> list[types.Tool]:
             description="Set the order of providers and models your Son falls back to when the main one fails. "
                         "Replaces the whole list; an empty list clears it. Every provider must be signed in.",
             inputSchema={"type": "object", "required": ["chain"], "additionalProperties": False, "properties": {
-                "chain": {"type": "array", "maxItems": 10, "items": {
+                "chain": {"type": "array", "maxItems": 6, "items": {
                     "type": "object", "required": ["provider", "model"], "additionalProperties": False,
                     "properties": pm}},
                 "son": son}},
@@ -530,8 +530,9 @@ def ai_status_line(d: dict) -> str:
     else:
         head = f"Signed in: {', '.join(signed)}."
     if g.get("model"):
-        head += f" All sessions use {_pname(g.get('provider'))} {g.get('model')}"
-        head += f", {pinned} pinned to another model." if pinned else "."
+        head += f" Default: {_pname(g.get('provider'))} {g.get('model')}."
+        if pinned:
+            head += f" {pinned} sessions have their own model or provider pin."
     fb = d.get("fallback") or []
     if fb:
         head += " Fallback: " + ", then ".join(f"{_pname(x.get('provider'))} {x.get('model')}" for x in fb) + "."
@@ -558,8 +559,8 @@ class AiSigninView:
             lines = [f"ChatGPT sign-in started for {son_name}."]
             lines.append(f"1. Open {purl} and enter code {code}." if purl else "1. Open the ChatGPT device sign-in page.")
             lines.append("Done: no code to paste. Your Son connects on its own once you approve.")
-            if link:
-                lines.append(f"(Optional: this one-time page follows the sign-in, expires in 15 min: {link})")
+            # Device flow completes on OpenAI; the code-entry page cannot poll it. Use the
+            # sign-in status tool below rather than promising progress on that page.
         elif provider == "claude":
             lines = [f"Claude sign-in started for {son_name}.",
                      f"1. Open {purl} and sign in. Claude shows a code." if purl else
