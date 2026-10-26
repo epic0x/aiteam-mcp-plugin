@@ -1,0 +1,5 @@
+name: aiteam-ai-control
+version: 0.1.0
+description: "aiteam.space AI control: loopback API (127.0.0.1) the aiteam MCP connector and Son gate use to show which AI each session runs on, switch provider/model for all sessions or one, set the fallback order, and sign the Son in to Claude or ChatGPT. Codes and keys arrive only through the one-time aiteam.space link; nothing secret is returned or logged."
+author: aiteam.space
+provides_hooks: []
