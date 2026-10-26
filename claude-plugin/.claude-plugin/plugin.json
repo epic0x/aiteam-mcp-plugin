@@ -1,6 +1,10 @@
 {
   "name": "aiteam",
-  "version": "0.1.6",
+  "version": "0.1.7",
+  "icon": "./.claude-plugin/icon.png",
+  "documentationUrl": "https://aiteam.space/help/connect",
+  "supportUrl": "https://aiteam.space/support",
+  "termsOfServiceUrl": "https://aiteam.space/terms",
   "description": "aiteam.space for Claude: connect to your Son, an AI teammate on its own computer, with the skills that tell Claude how to hand off work, steer it in one thread per task, and answer status questions from live sources. Works in Claude voice/live mode.",
   "author": {
     "name": "aiteam.space",
