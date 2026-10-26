@@ -199,8 +199,8 @@ class StubRunner:
         return (name != "github_pr_merge"), f"gh says {name}"
 
 
-async def test_github_on_by_default_full_surface_50():
-    """Full public surface: usage_guide + 4 bridge + 3 health + 15 upstream (stubbed) + 27 GitHub = 50, GitHub with no config at all."""
+async def test_github_on_by_default_full_surface_54():
+    """Full public surface: usage_guide + 4 bridge + 3 health + 4 model + 15 upstream (stubbed) + 27 GitHub = 54, GitHub with no config at all."""
     import mcp.types as types
     conn = Connector([SonLink("my-son", "http://box.invalid", "t")], "all", gh_runner=StubRunner())
 
@@ -212,7 +212,7 @@ async def test_github_on_by_default_full_surface_50():
             return [types.Tool(name=n, inputSchema={"type": "object"}) for n in names]
     conn.upstreams["my-son"] = Up()
     names = [t.name for t in await conn.list_tools()]
-    assert len(names) == 50 == len(set(names))
+    assert len(names) == 54 == len(set(names))
     assert set(GITHUB_TOOLS) <= set(names)
 
 
