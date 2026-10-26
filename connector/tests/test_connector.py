@@ -107,7 +107,8 @@ async def test_mcp_connector_end_to_end(stack):
         tools = {t.name: t for t in (await client.list_tools()).tools}
         native = {"usage_guide", "son_send", "son_list", "son_conversations", "son_conversation_history",
                   "ping", "health", "cleanup", "son_model_status", "son_model_set_all",
-                  "son_model_set_session", "son_model_fallback_set"}
+                  "son_model_set_session", "son_model_fallback_set", "ai_status", "ai_signin_start", "ai_signin_status",
+                  "ai_model_set", "ai_fallback_set"}
         assert set(tools) - native == set(GITHUB_TOOLS) and native <= set(tools)  # GitHub (gh) is on by default
         assert tools["son_send"].annotations.readOnlyHint is False and tools["son_list"].annotations.readOnlyHint is True
         assert all(t.title for t in tools.values()), "store review needs titles"

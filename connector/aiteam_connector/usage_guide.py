@@ -13,7 +13,7 @@ import mcp.types as types
 
 from .intro import INTRO, INTRO_SHORT
 
-GUIDE_VERSION = "9"
+GUIDE_VERSION = "10"
 
 INSTRUCTIONS = (
     INTRO_SHORT + " Introduce us this way when the user first connects (prompt who_we_are, resource "
@@ -39,7 +39,11 @@ INSTRUCTIONS = (
     "telegram_topic_send, telegram_topic_create, telegram_topic_edit (one topic per task). (6) A result with "
     "paywall: true is an add-on the user has not bought: tell them its message as is; do not retry or work around it. "
     "(7) The Son's computer: ping (is it up), health (disk, memory, CPU, jobs; read its first line out as is) and "
-    "cleanup (safe, once per 10 minutes) when health says the disk is filling up."
+    "cleanup (safe, once per 10 minutes) when health says the disk is filling up. "
+    "(8) AI sign-in and model: during onboarding call ai_status, then ai_signin_start (Claude or ChatGPT; they need no "
+    "AI on the Son). Never ask the user to paste a code or an API key in the chat and never accept one here: always "
+    "give them the one-time aiteam.space link from ai_signin_start. Switch models with ai_model_set and the fallback "
+    "order with ai_fallback_set."
 )
 
 GUIDE = INTRO + """
@@ -188,6 +192,21 @@ Your Son has its own computer. Check it and fix it from the chat or voice mode, 
   the user and do not retry.
 - Memory and CPU warnings are not fixed by cleanup. Say what health reports and ask the user before stopping anything.
 
+## 9. AI sign-in and model
+Which AI your Son thinks with, set from the chat. These tools make no AI call on the Son, so they work on a brand-new
+Son before anything is signed in.
+- **Onboarding:** call `ai_status` first. If no provider is signed in, offer `ai_signin_start` (Claude or ChatGPT
+  subscription, or an Anthropic / OpenAI API key).
+- `ai_signin_start` returns the provider's sign-in link and a one-time aiteam.space link (expires in 15 minutes).
+  Claude: the user opens the first link, signs in, and pastes the code Claude shows on the aiteam.space link.
+  ChatGPT: the user opens the link and types the short code shown; nothing to paste. API keys: pasted on the
+  aiteam.space link. Give the user the links exactly as returned.
+- **Never ask the user to paste a code, a key or a password in the chat, and never accept one here.** If they paste
+  one anyway, tell them to use the aiteam.space link instead and to rotate that key.
+- `ai_signin_status` says waiting, connected, failed or expired. Check it after the user says they are done.
+- `ai_model_set` switches the provider and model for every session (default) or pins one session. `ai_fallback_set`
+  sets the order your Son falls back to when the main model fails. The provider must be signed in first.
+
 ## Always
 - Sign the last line of anything you post: `— <user> from <app>`, for example `— Sam from ChatGPT`.
 - If a tool returns an error, say so and stop. Never invent a result.
@@ -202,7 +221,8 @@ GUIDE_TOOLS = ("messages_send", "conversations_list", "sessions_list", "sessions
                "discord_threads_list", "discord_thread_edit", "discord_thread_create", "discord_thread_get",
                "discord_thread_member_add", "discord_thread_member_remove", "discord_thread_members",
                "telegram_topics_list", "telegram_topic_messages", "telegram_topic_send", "telegram_topic_create",
-               "telegram_topic_edit", "telegram_chat_get", "ping", "health", "cleanup")
+               "telegram_topic_edit", "telegram_chat_get", "ping", "health", "cleanup",
+               "ai_status", "ai_signin_start", "ai_signin_status", "ai_model_set", "ai_fallback_set")
 
 
 def usage_guide_tool() -> types.Tool:

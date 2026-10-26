@@ -30,6 +30,13 @@ HTTP API (JSON unless noted):
                                                       status ok|warning|critical + a one-sentence summary
   GET  /v1/health/history                          -> 24 h of 5-minute samples (graphs)
   POST /v1/cleanup                                 -> run the fixed safe cleanup (no parameters; once per 10 min)
+  GET  /v1/ai/status                               -> which AI the Son uses: providers signed in, model per session
+  POST /v1/ai/model                                {provider, model, scope: all|session, session_key?, session_id?}
+  PUT  /v1/ai/fallback                             {chain: [{provider, model}]}
+  POST /v1/ai/signin/start                         {provider: claude|chatgpt|anthropic-key|openai-key, label?}
+  GET  /v1/ai/signin/{signin_id}                   -> waiting | connected | failed | expired
+       (the five /v1/ai routes proxy to the Son's aiteam-ai-control gateway plugin on loopback, see AiControl.
+        /ai/credential is NEVER exposed here: a code or key only reaches the Son through the aiteam.space page.)
 """
 from __future__ import annotations
 
@@ -42,6 +49,7 @@ import os
 import re
 import secrets
 import sys
+import pathlib
 from dataclasses import dataclass, field
 from typing import Any, Optional
 
@@ -85,6 +93,7 @@ class BoxConfig:
     sons: dict[str, SonTarget]
     callers: list[Caller]
     health: Optional[dict] = None  # host_health.HealthConfig keys; None = defaults (HERMES_HOME, its disk)
+    ai_control: Optional[dict] = None  # {"url": "http://127.0.0.1:8651", "key_env": "API_SERVER_KEY"}; None = defaults
 
     @classmethod
     def load(cls, path: str) -> "BoxConfig":
@@ -96,7 +105,75 @@ class BoxConfig:
         sons = {s["name"]: SonTarget(s["name"], s["url"], s.get("key_env", "SON_API_KEY"), s.get("model")) for s in raw["sons"]}
         callers = [Caller(c["id"], c.get("name", c["id"]), c["token_sha256"], c.get("sons", ["*"]))
                    for c in raw.get("callers", [])]
-        return cls(box_id, raw.get("box_name", box_id), sons, callers, raw.get("health"))
+        return cls(box_id, raw.get("box_name", box_id), sons, callers, raw.get("health"), raw.get("ai_control"))
+
+
+AI_BODY_MAX = 16 * 1024
+AI_UNAVAILABLE = "ai control not available on this Son yet"
+SIGNIN_ID_RX = re.compile(r"^[A-Za-z0-9_-]{1,128}$")
+
+
+def _env_file_value(path: pathlib.Path, name: str) -> str:
+    """KEY=value from a dotenv file (``export`` and quotes tolerated). Empty when absent or unreadable."""
+    try:
+        lines = path.read_text().splitlines()
+    except OSError:
+        return ""
+    for ln in lines:
+        ln = ln.strip()
+        if ln.startswith("export "):
+            ln = ln[7:].lstrip()
+        k, sep, v = ln.partition("=")
+        if sep and k.strip() == name:
+            v = v.strip()
+            if len(v) >= 2 and v[0] == v[-1] and v[0] in "\"'":
+                v = v[1:-1]
+            return v
+    return ""
+
+
+class AiControl:
+    """Proxy to the Son's ``aiteam-ai-control`` gateway plugin (loopback HTTP, Bearer = the api_server key).
+
+    The key is read per call (env ``key_env``, else ``$HERMES_HOME/.env``) so a rotated key needs no restart. It never
+    leaves the box, and request/response bodies are never logged (a sign-in start carries a one-time ticket)."""
+
+    def __init__(self, raw: Optional[dict] = None):
+        raw = raw or {}
+        self.url = str(raw.get("url") or "http://127.0.0.1:8651").rstrip("/")
+        self.key_env = str(raw.get("key_env") or "API_SERVER_KEY")
+        self.timeout_s = float(raw.get("timeout_s") or 30)
+
+    def key(self) -> str:
+        k = os.environ.get(self.key_env, "")
+        if k:
+            return k
+        home = pathlib.Path(os.environ.get("HERMES_HOME") or "/opt/data")
+        return _env_file_value(home / ".env", self.key_env)
+
+    async def forward(self, method: str, path: str, body: Optional[dict] = None) -> tuple[int, dict]:
+        import aiohttp
+        key = self.key()
+        if not key:
+            return 503, {"error": AI_UNAVAILABLE}
+        try:
+            async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=self.timeout_s)) as http:
+                async with http.request(method, self.url + path, json=body,
+                                        headers={"Authorization": f"Bearer {key}"}) as r:
+                    status = r.status
+                    try:
+                        data = await r.json(content_type=None)
+                    except Exception:  # noqa: BLE001 - non-JSON upstream body: never relayed
+                        data = None
+        except (aiohttp.ClientError, OSError, TimeoutError):
+            return 503, {"error": AI_UNAVAILABLE}
+        if status >= 500:
+            return 502, {"error": "ai control failed on this Son"}
+        if status in (401, 403):  # the box's own key was refused: not the caller's fault, never echo upstream
+            return 502, {"error": "ai control refused this box's key"}
+        if not isinstance(data, dict):
+            data = {"error": f"ai control answered {status}"} if status >= 400 else {}
+        return status, data
 
 
 def session_id_for(box_id: str, caller_id: str, conversation: str) -> str:
@@ -108,6 +185,7 @@ class Box:
                  host: Optional[HostHealth] = None):
         self.cfg = cfg
         self.host = host or HostHealth(HealthConfig.from_raw(cfg.health))
+        self.ai = AiControl(cfg.ai_control)
         self.bridges = bridges or {
             n: HermesBridge(t.url, os.environ.get(t.key_env, ""), model=t.model) for n, t in cfg.sons.items()}
         missing = [n for n, t in cfg.sons.items() if bridges is None and not os.environ.get(t.key_env)]
@@ -275,6 +353,56 @@ class Box:
         headers = {"Retry-After": str(body["retry_after_s"])} if code == 429 else None
         return web.json_response(body, status=code, headers=headers)
 
+    # --- AI control (proxy to the gateway plugin; see AiControl) --------------------------------
+    @staticmethod
+    async def _small_json(request: web.Request) -> dict:
+        if (request.content_length or 0) > AI_BODY_MAX:
+            raise web.HTTPRequestEntityTooLarge(max_size=AI_BODY_MAX, actual_size=request.content_length or 0,
+                                                text='{"error":"request too large"}', content_type="application/json")
+        raw = b""
+        while len(raw) <= AI_BODY_MAX:  # StreamReader.read(n) may return a partial chunk: read to EOF, capped
+            chunk = await request.content.read(AI_BODY_MAX + 1 - len(raw))
+            if not chunk:
+                break
+            raw += chunk
+        if len(raw) > AI_BODY_MAX:
+            raise web.HTTPRequestEntityTooLarge(max_size=AI_BODY_MAX, actual_size=len(raw),
+                                                text='{"error":"request too large"}', content_type="application/json")
+        try:
+            body = json.loads(raw or b"{}")
+        except ValueError:
+            body = None
+        if not isinstance(body, dict):
+            raise web.HTTPBadRequest(text='{"error":"a JSON object is required"}', content_type="application/json")
+        return body
+
+    async def _ai(self, request: web.Request, method: str, path: str, with_body: bool,
+                  label: Optional[str] = None) -> web.Response:
+        c = self.caller_for(request)
+        body = await self._small_json(request) if with_body else None
+        code, data = await self.ai.forward(method, path, body)
+        log.info("ai control: caller=%s %s %s -> %d", c.id, method, label or path, code)  # never the bodies
+        return web.json_response(data, status=code, headers={"Cache-Control": "no-store"})
+
+    async def ai_status(self, request: web.Request) -> web.Response:
+        return await self._ai(request, "GET", "/ai/status", False)
+
+    async def ai_model(self, request: web.Request) -> web.Response:
+        return await self._ai(request, "POST", "/ai/model", True)
+
+    async def ai_fallback(self, request: web.Request) -> web.Response:
+        return await self._ai(request, "PUT", "/ai/fallback", True)
+
+    async def ai_signin_start(self, request: web.Request) -> web.Response:
+        return await self._ai(request, "POST", "/ai/signin/start", True)
+
+    async def ai_signin_get(self, request: web.Request) -> web.Response:
+        self.caller_for(request)  # auth before input validation: no oracle for callers without a token
+        sid = request.match_info["signin_id"]
+        if not SIGNIN_ID_RX.fullmatch(sid):
+            raise web.HTTPBadRequest(text='{"error":"invalid signin_id"}', content_type="application/json")
+        return await self._ai(request, "GET", f"/ai/signin/{sid}", False, label="/ai/signin/<id>")
+
     async def _start_sampler(self, _app: web.Application) -> None:
         self.host.start_sampler()
 
@@ -291,6 +419,12 @@ class Box:
         a.router.add_get("/v1/health", self.health)
         a.router.add_get("/v1/health/history", self.health_history)
         a.router.add_post("/v1/cleanup", self.cleanup)
+        # AI control. Deliberately NO /v1/ai/credential: codes and keys only arrive through the aiteam.space page.
+        a.router.add_get("/v1/ai/status", self.ai_status)
+        a.router.add_post("/v1/ai/model", self.ai_model)
+        a.router.add_put("/v1/ai/fallback", self.ai_fallback)
+        a.router.add_post("/v1/ai/signin/start", self.ai_signin_start)
+        a.router.add_get("/v1/ai/signin/{signin_id}", self.ai_signin_get)
         a.router.add_get("/healthz", self.healthz)
         a.router.add_get("/v1/whoami", self.whoami)
         a.router.add_get("/v1/sons", self.sons)

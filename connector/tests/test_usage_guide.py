@@ -48,9 +48,9 @@ def test_guide_documents_webhook_hand_off():
 
 
 def test_guide_only_names_tools_that_exist():
-    from aiteam_connector.server import DISCORD_THREAD_TOOLS, HEALTH_TOOLS, TELEGRAM_TOOLS, native_tools
+    from aiteam_connector.server import AI_TOOLS, DISCORD_THREAD_TOOLS, HEALTH_TOOLS, TELEGRAM_TOOLS, native_tools
     known = ({t.name for t in native_tools(["my-son"])} | set(GITHUB_TOOLS) | UPSTREAM | {"usage_guide"}
-             | set(DISCORD_THREAD_TOOLS) | set(TELEGRAM_TOOLS) | set(HEALTH_TOOLS))
+             | set(DISCORD_THREAD_TOOLS) | set(TELEGRAM_TOOLS) | set(HEALTH_TOOLS) | set(AI_TOOLS))
     ARGS = {"topic_id", "chat_id", "reply_to_message_id", "add_user_ids", "member_id", "member_of", "is_member", "include_members"}
     named = (set(re.findall(r"`([a-z]+_[a-z_]+)`", GUIDE)) - ARGS) | set(GUIDE_TOOLS)
     assert named <= known, f"guide names unknown tools: {sorted(named - known)}"
@@ -82,3 +82,14 @@ def test_guide_covers_computer_health_tools():
         assert name in GUIDE
     assert "read out" in g and "once every 10 minutes" in g and "do not retry" in g
     assert "ping" in INSTRUCTIONS and "health" in INSTRUCTIONS and "cleanup" in INSTRUCTIONS
+
+
+def test_guide_covers_ai_signin_and_never_asks_for_secrets_in_chat():
+    g = GUIDE.lower()
+    assert "## 9. ai sign-in and model" in g
+    for name in ("`ai_status`", "`ai_signin_start`", "`ai_signin_status`", "`ai_model_set`", "`ai_fallback_set`"):
+        assert name in GUIDE
+    assert "never ask the user to paste a code" in g and "aiteam.space link" in g
+    assert INSTRUCTIONS.index("ai_status") < INSTRUCTIONS.index("ai_signin_start")
+    assert "Never ask the user to paste a code or an API key in the chat" in INSTRUCTIONS
+    assert "aiteam.space link" in INSTRUCTIONS

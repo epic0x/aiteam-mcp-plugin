@@ -39,7 +39,8 @@ OAuth gate (:8701, existing)  ──▶  aiteam-connector (:8720)  ← ONE MCP s
    Plus 27 GitHub tools (14 write), on by default, that run the Son's own `gh` CLI login: same permissions and the
    same output as `gh` on that Son (connector/aiteam_connector/github_gh.py). No GitHub App and no separate scope
    (owner 2026-10-12, supersedes the read-only `github:read` design). Plus `usage_guide` (the how-to-drive-your-Son guide, also sent as the MCP server instructions, so no client
-   needs a hand-installed skill). Total public surface: 50 tools (`ping`, `health`, `cleanup` added: docs/HEALTH.md).
+   needs a hand-installed skill). Total public surface: 55 tools (`ping`, `health`, `cleanup` added: docs/HEALTH.md; `ai_status`,
+   `ai_signin_start`, `ai_signin_status`, `ai_model_set`, `ai_fallback_set` added: docs/AI-CONTROL.md).
 3. **Paperclip-style HTTP messaging bridge** [built]. The model is `felipefontoura/paperclip-adapter-hermes-gateway`:
    an outside caller talks to Hermes over HTTP with its own bearer, with no CLI and no bind mounts. We use the
    session API, not `/v1/chat/completions`, so every turn lands in a named Hermes session with history, FTS

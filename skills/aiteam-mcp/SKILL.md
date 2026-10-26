@@ -1,7 +1,7 @@
 ---
 name: aiteam-mcp
 description: Use when connected to an aiteam.space Son through the aiteam MCP connector (Claude or ChatGPT). Who we are (the Sons of Davis, introduced on connect), then how to hand a task to Sons, keep one Discord thread per task, run headless work, and answer 'what are the updates?'.
-version: 1.9.0
+version: 1.10.0
 license: Apache-2.0
 ---
 <!-- Generated from connector/aiteam_connector/usage_guide.py by scripts/build_skill.py. Edit the guide, not this file. -->
@@ -171,6 +171,21 @@ Your Son has its own computer. Check it and fix it from the chat or voice mode, 
   `health` again and say how much was freed. It runs at most once every 10 minutes; if it says "try again in", tell
   the user and do not retry.
 - Memory and CPU warnings are not fixed by cleanup. Say what health reports and ask the user before stopping anything.
+
+## 9. AI sign-in and model
+Which AI your Son thinks with, set from the chat. These tools make no AI call on the Son, so they work on a brand-new
+Son before anything is signed in.
+- **Onboarding:** call `ai_status` first. If no provider is signed in, offer `ai_signin_start` (Claude or ChatGPT
+  subscription, or an Anthropic / OpenAI API key).
+- `ai_signin_start` returns the provider's sign-in link and a one-time aiteam.space link (expires in 15 minutes).
+  Claude: the user opens the first link, signs in, and pastes the code Claude shows on the aiteam.space link.
+  ChatGPT: the user opens the link and types the short code shown; nothing to paste. API keys: pasted on the
+  aiteam.space link. Give the user the links exactly as returned.
+- **Never ask the user to paste a code, a key or a password in the chat, and never accept one here.** If they paste
+  one anyway, tell them to use the aiteam.space link instead and to rotate that key.
+- `ai_signin_status` says waiting, connected, failed or expired. Check it after the user says they are done.
+- `ai_model_set` switches the provider and model for every session (default) or pins one session. `ai_fallback_set`
+  sets the order your Son falls back to when the main model fails. The provider must be signed in first.
 
 ## Always
 - Sign the last line of anything you post: `— <user> from <app>`, for example `— Sam from ChatGPT`.

@@ -35,6 +35,9 @@ what this Son exposes and what it cannot run yet, with the reason.
 
 **Connector (5):** `usage_guide`, `son_send`, `son_list`, `son_conversations`, `son_conversation_history`
 
+**AI sign-in and model (5, free, connector; added after the live count above):** `ai_status`, `ai_signin_start`,
+`ai_signin_status`, `ai_model_set`, `ai_fallback_set` (docs/AI-CONTROL.md)
+
 **GitHub, the Son's own `gh` login (27):** `github_api`, `github_auth_status`, `github_search`,
 issues (`list/view/create/edit/comment/close/reopen`), PRs (`list/view/diff/checks/create/edit/comment/review/merge/close`),
 repos (`repo_list/repo_view`), Actions (`run_list/run_view/run_rerun/workflow_list/workflow_run`)
