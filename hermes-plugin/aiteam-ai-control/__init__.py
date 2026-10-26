@@ -41,7 +41,7 @@ SIGNIN_TTL_S = 15 * 60
 MAX_SIGNINS = 20
 MAX_ATTEMPTS = 3
 MAX_BODY = 16 * 1024
-MAX_SESSIONS = 50
+_MODEL_LOCK = threading.RLock()
 
 # provider (tool enum) -> (Hermes pool provider, kind)
 SIGNIN_KINDS: Dict[str, Tuple[str, str]] = {
@@ -137,11 +137,9 @@ def _model_cfg(cfg: dict) -> Tuple[str, str]:
 
 def _clean_err(exc: Any, default: str) -> str:
     """Plain one-line error; never a provider body (they can echo request data)."""
-    msg = str(getattr(exc, "message", "") or exc or "").strip().splitlines()[0:1]
-    text = msg[0] if msg else ""
-    if not text or len(text) > 240 or "sk-" in text or "Bearer" in text:
-        return default
-    return text
+    # Provider exceptions are untrusted and may echo arbitrary credentials, without a known prefix.
+    # Never try to redact an unknown error format: use caller-supplied static copy instead.
+    return default
 
 
 # --------------------------------------------------------------------------------------------
@@ -173,6 +171,36 @@ def _authenticated(cfg: dict) -> List[dict]:
         return []
 
 
+API_SOURCES = ("api_server", "hermes_browser", "browser", "desktop", "dashboard")
+
+
+def _state_db(runner):
+    return getattr(getattr(runner, "session_store", None), "_db", None)
+
+
+def _api_sessions(runner) -> List[dict]:
+    db = _state_db(runner)
+    if db is None:
+        return []
+    out = []
+    while True:
+        page = db.list_sessions_rich(sources=list(API_SOURCES), limit=200, offset=len(out))
+        out.extend(page)
+        if len(page) < 200:
+            return out
+
+
+def _api_lock(row: dict) -> dict:
+    raw = row.get("model_config") or {}
+    if isinstance(raw, str):
+        try:
+            raw = json.loads(raw)
+        except ValueError:
+            raw = {}
+    lock = raw.get("browser_model_lock") if isinstance(raw, dict) else None
+    return lock if isinstance(lock, dict) and lock.get("confirmed") else {}
+
+
 def status() -> dict:
     cfg = _load_config()
     g_provider, g_model = _model_cfg(cfg)
@@ -185,7 +213,8 @@ def status() -> dict:
         if not slug:
             continue
         providers[slug] = {"provider": slug, "name": str(p.get("name") or slug), "signed_in": True,
-                           "models": [str(m) for m in (p.get("models") or [])][:12], "credentials": []}
+                           "models": [str(m.get("id") or m.get("model") or "") if isinstance(m, dict) else str(m)
+                                      for m in (p.get("models") or [])][:12], "credentials": []}
     for slug in POOL_PROVIDERS:
         creds = _pool_summary(slug)
         row = providers.setdefault(slug, {"provider": slug, "name": NAMES.get(slug, slug),
@@ -197,8 +226,8 @@ def status() -> dict:
     if runner is not None:
         try:
             live = getattr(runner, "_session_model_overrides", {}) or {}
-            for e in runner.session_store.list_sessions()[:MAX_SESSIONS]:
-                ov = live.get(e.session_key) or e.model_override or {}
+            for e in runner.session_store.list_sessions():
+                ov = live.get(e.session_key) or e.model_override or _channel_route(runner, e)
                 plat = getattr(e.platform, "value", e.platform)
                 sessions.append({
                     "session_key": e.session_key, "session_id": e.session_id,
@@ -208,7 +237,18 @@ def status() -> dict:
                     "updated_at": e.updated_at.isoformat() if getattr(e, "updated_at", None) else ""})
         except Exception:
             logger.debug("aiteam-ai-control: session listing failed", exc_info=True)
+    seen = {x["session_id"] for x in sessions}
+    for row in _api_sessions(runner):
+        if row["id"] in seen:
+            continue
+        lock = _api_lock(row)
+        sessions.append({"session_key": "", "session_id": row["id"],
+                         "platform": row.get("source") or "api_server", "title": row.get("title") or "",
+                         "provider": lock.get("provider") or g_provider,
+                         "model": lock.get("model") or g_model, "override": bool(lock)})
+        seen.add(row["id"])
     return {"global": {"provider": g_provider, "model": g_model}, "fallback": fallback,
+            "apply_timing": "next turn; running jobs are not interrupted",
             "providers": sorted(providers.values(), key=lambda r: (not r["signed_in"], r["provider"])),
             "sessions": sessions, "gateway": runner is not None}
 
@@ -237,13 +277,55 @@ def _find_session(runner, session_key: str, session_id: str):
     store = runner.session_store
     if session_key:
         e = store.lookup_by_session_key(session_key)
-        if e is not None:
+        if e is not None and (not session_id or e.session_id == session_id):
             return e
+        raise HttpError(404, "No session matches that key and id on this Son.")
     if session_id:
         e = store.lookup_by_session_id(session_id)
         if e is not None:
             return e
+        db = _state_db(runner)
+        row = db.get_session(session_id) if db is not None else None
+        if row and row.get("source") in API_SOURCES and not row.get("archived"):
+            from types import SimpleNamespace
+            return SimpleNamespace(session_id=session_id, session_key="", api_only=True)
     raise HttpError(404, "No session with that key or id on this Son.")
+
+
+def _clear_channel_models(runner) -> None:
+    """All means all: channel routing must not silently keep an older model/provider.
+
+    Keep each channel's prompt and unrelated settings; clear just the two route fields in the
+    durable user config and the already-parsed in-memory gateway config.
+    """
+    from utils import atomic_roundtrip_yaml_update
+    cfg = _load_config()
+    platforms = cfg.get("platforms") or {}
+    if isinstance(platforms, dict):
+        for name, pc in platforms.items():
+            if not isinstance(pc, dict) or not isinstance(pc.get("channel_overrides"), dict):
+                continue
+            overrides = pc["channel_overrides"]
+            clean = {cid: {k: v for k, v in row.items() if k not in ("model", "provider")}
+                     if isinstance(row, dict) else row for cid, row in overrides.items()}
+            if clean != overrides:
+                atomic_roundtrip_yaml_update(_config_path(), f"platforms.{name}.channel_overrides", clean)
+    parsed = getattr(getattr(runner, "config", None), "platforms", {}) if runner is not None else {}
+    for pc in parsed.values():
+        for ov in (getattr(pc, "channel_overrides", {}) or {}).values():
+            ov.model = None
+            ov.provider = None
+
+
+def _channel_route(runner, entry) -> dict:
+    origin = getattr(entry, "origin", None)
+    if origin is None:
+        return {}
+    try:
+        ov = runner._channel_override_for(origin)
+        return {"model": ov.model, "provider": ov.provider} if ov else {}
+    except (AttributeError, TypeError):
+        return {}
 
 
 def set_model(body: dict) -> dict:
@@ -266,37 +348,51 @@ def set_model(body: dict) -> dict:
             "request_overrides": dict(result.request_overrides or {}),
             "capabilities": dict(result.runtime_capabilities or {}),
         }
-        runner._session_model_overrides[entry.session_key] = override
-        try:
-            runner.session_store.set_model_override(entry.session_key, override)  # non-secret keys only
-        except Exception:
-            logger.debug("aiteam-ai-control: persisting session override failed", exc_info=True)
-        runner._evict_cached_agent(entry.session_key)
+        # Persist first, then publish; do not report a durable switch if its write failed.
+        db = _state_db(runner)
+        if db is not None:
+            row = db.get_session(entry.session_id)
+            if row and row.get("source") in API_SOURCES:
+                db.update_session_runtime_lock(entry.session_id, model=result.new_model,
+                    provider=result.target_provider, route_source="raw_request", confirmed=True)
+            db.update_session_model(entry.session_id, result.new_model, provider=result.target_provider,
+                                    base_url=result.base_url, api_mode=result.api_mode)
+        if entry.session_key:
+            runner.session_store.set_model_override(entry.session_key, override)  # sanitizes non-secret keys only
+            runner._session_model_overrides[entry.session_key] = override
+            getattr(runner, "_pending_one_turn_model_restores", {}).pop(entry.session_key, None)
+        # Never evict/close an in-flight agent. The model/provider credential signature is checked
+        # by Hermes before cache reuse, so the next turn rebuilds naturally without interrupting this one.
         return {"ok": True, "scope": "session", "session_key": entry.session_key,
                 "provider": result.target_provider, "model": result.new_model, "sessions_changed": 1}
     result = _switch(provider, model, is_global=True)
     from hermes_cli.model_switch import persist_model_selection
     persist_model_selection(result, _config_path())
+    _clear_channel_models(runner)
     changed = 0
     if runner is not None:
         overrides = getattr(runner, "_session_model_overrides", {})
+        getattr(runner, "_pending_one_turn_model_restores", {}).clear()
         keys = set(overrides.keys())
         try:
             keys |= {e.session_key for e in runner.session_store.list_sessions() if e.model_override}
         except Exception:
             pass
         for key in keys:
+            runner.session_store.set_model_override(key, None)
             overrides.pop(key, None)
-            try:
-                runner.session_store.set_model_override(key, None)
-            except Exception:
-                logger.debug("aiteam-ai-control: clearing override failed", exc_info=True)
-            changed += 1
-        try:
-            for e in runner.session_store.list_sessions():
-                runner._evict_cached_agent(e.session_key)  # next turn rebuilds on the new model
-        except Exception:
-            logger.debug("aiteam-ai-control: cache eviction failed", exc_info=True)
+        # A changed global route changes the cache signature on the next turn. Let running turns
+        # finish using their existing clients; do not interrupt customer jobs to apply configuration.
+        changed_ids = {e.session_id for e in runner.session_store.list_sessions()}
+        db = _state_db(runner)
+        for row in _api_sessions(runner):
+            if _api_lock(row):
+                db.update_session_runtime_lock(row["id"], model=result.new_model,
+                    provider=result.target_provider, route_source="raw_request", confirmed=False)
+            db.update_session_model(row["id"], result.new_model, provider=result.target_provider,
+                                    base_url=result.base_url, api_mode=result.api_mode)
+            changed_ids.add(row["id"])
+        changed = len(changed_ids)
     return {"ok": True, "scope": "all", "provider": result.target_provider, "model": result.new_model,
             "sessions_changed": changed}
 
@@ -343,6 +439,12 @@ class SignIns:
         if len(self._by_id) > MAX_SIGNINS:
             for sid in sorted(self._by_id, key=lambda s: self._by_id[s]["created"])[:-MAX_SIGNINS]:
                 self._by_id.pop(sid, None)
+
+    def ensure_capacity(self) -> None:
+        with self._lock:
+            self._gc()
+            if sum(r["state"] == "waiting" for r in self._by_id.values()) >= MAX_SIGNINS:
+                raise HttpError(429, "Too many sign-ins are waiting. Finish one or wait for it to expire.")
 
     def add(self, rec: dict) -> Tuple[str, str]:
         ticket = secrets.token_urlsafe(32)
@@ -426,6 +528,9 @@ def _codex_worker(rec: dict, device: dict) -> None:
         code_resp = _codex_poll_authorization_code(
             issuer, device_auth_id=device["device_auth_id"], user_code=device["user_code"],
             poll_interval=int(device.get("interval") or 5))
+        if rec.get("state") != "waiting" or rec.get("expires", 0) < time.time():
+            rec.update(state="expired", used=True)
+            return
         tokens = _codex_exchange_authorization_code(issuer, CODEX_OAUTH_CLIENT_ID, code_resp)
         try:
             from hermes_cli.auth import _utc_now_z
@@ -453,6 +558,7 @@ def signin_start(body: dict, *, codex_starter: Optional[Callable[[dict, dict], N
     provider = str(body.get("provider") or "").strip()
     if provider not in SIGNIN_KINDS:
         raise HttpError(400, "provider must be claude, chatgpt, anthropic-key or openai-key.")
+    SIGNINS.ensure_capacity()
     pool_provider, kind = SIGNIN_KINDS[provider]
     label = str(body.get("label") or "").strip()[:60]
     rec: dict = {"provider": provider, "pool_provider": pool_provider, "kind": kind, "label": label}
@@ -508,7 +614,7 @@ def _exchange_claude(rec: dict, secret: str) -> Tuple[str, str]:
     code, _, received_state = raw.partition("#")
     if not code or len(code) > 1000:
         raise HttpError(400, "That does not look like a Claude code. Copy the whole code Claude showed.")
-    if received_state and not hmac.compare_digest(received_state, rec.get("oauth_state", "")):
+    if not received_state or not hmac.compare_digest(received_state, rec.get("oauth_state", "")):
         raise HttpError(400, "That code is from a different sign-in. Use the link from the same message.")
     data = json.dumps({"grant_type": "authorization_code", "client_id": _OAUTH_CLIENT_ID, "code": code,
                        "state": rec.get("oauth_state", ""), "redirect_uri": _OAUTH_REDIRECT_URI,
@@ -575,9 +681,11 @@ def _route(method: str, path: str, body: dict) -> dict:
     if method == "GET" and path == "/ai/status":
         return status()
     if method == "POST" and path == "/ai/model":
-        return set_model(body)
+        with _MODEL_LOCK:
+            return set_model(body)
     if method == "PUT" and path == "/ai/fallback":
-        return set_fallback(body)
+        with _MODEL_LOCK:
+            return set_fallback(body)
     if method == "POST" and path == "/ai/signin/start":
         return signin_start(body)
     if method == "GET" and path.startswith("/ai/signin/"):
@@ -604,6 +712,7 @@ class Handler(BaseHTTPRequestHandler):
         self.wfile.write(data)
 
     def _handle(self, method: str) -> None:
+        self.connection.settimeout(30)
         try:
             key = _api_key()
             if not key:
@@ -611,7 +720,14 @@ class Handler(BaseHTTPRequestHandler):
             auth = self.headers.get("Authorization", "")
             if not auth.startswith("Bearer ") or not hmac.compare_digest(auth[7:].strip(), key):
                 raise HttpError(401, "Unauthorized.")
-            length = int(self.headers.get("Content-Length") or 0)
+            if self.headers.get("Transfer-Encoding"):
+                raise HttpError(400, "Content-Length is required; transfer encoding is not supported.")
+            try:
+                length = int(self.headers.get("Content-Length") or 0)
+            except ValueError:
+                raise HttpError(400, "Invalid Content-Length.")
+            if length < 0:
+                raise HttpError(400, "Invalid Content-Length.")
             if length > MAX_BODY:
                 raise HttpError(413, "Request too large.")
             body: dict = {}
@@ -627,8 +743,7 @@ class Handler(BaseHTTPRequestHandler):
         except HttpError as exc:
             self._send(exc.status, {"ok": False, "error": exc.message})
         except Exception as exc:
-            logger.warning("aiteam-ai-control: %s %s failed (%s)", method, self.path.split("?", 1)[0],
-                           type(exc).__name__)
+            logger.warning("aiteam-ai-control: request failed (%s)", type(exc).__name__)
             self._send(500, {"ok": False, "error": "AI control failed on this Son. Try again."})
 
     def do_GET(self) -> None:

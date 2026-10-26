@@ -121,7 +121,7 @@ def test_model_session_scope(monkeypatch, server):
                                                      "scope": "session", "session_id": "s2"})
     assert code == 200 and body["session_key"] == "k2" and body["sessions_changed"] == 1
     assert runner._session_model_overrides["k2"]["model"] == "gpt-5.5"
-    assert evicted == ["k2"] and "SECRET" not in json.dumps(body)
+    assert evicted == [] and "SECRET" not in json.dumps(body)
     assert call(server, "POST", "/ai/model", {"provider": "a", "model": "b", "scope": "session",
                                              "session_key": "nope"})[0] == 404
 
@@ -137,9 +137,9 @@ def test_model_all_scope_clears_pins(monkeypatch, server):
                              _evict_cached_agent=evicted.append)
     monkeypatch.setattr(ac, "_runner", lambda: runner)
     code, body, _ = call(server, "POST", "/ai/model", {"provider": "openai-codex", "model": "gpt-5.5"})
-    assert code == 200 and body["scope"] == "all" and body["sessions_changed"] == 1
+    assert code == 200 and body["scope"] == "all" and body["sessions_changed"] == 2
     assert persisted and runner._session_model_overrides == {}
-    assert ("k1", None) in store.set_calls and sorted(evicted) == ["k1", "k2"]
+    assert ("k1", None) in store.set_calls and evicted == []
 
 
 def test_model_validation(server):
@@ -245,7 +245,7 @@ def test_codex_worker_stores(monkeypatch):
     monkeypatch.setattr(ac, "_add_pool_entry", lambda prov, **kw: added.append((prov, kw)) or "me@openai")
     import hermes_cli.auth as auth
     monkeypatch.setattr(auth, "mark_provider_active_if_unset", lambda p: None)
-    rec = {"id": "si_x", "label": ""}
+    rec = {"id": "si_x", "label": "", "state": "waiting", "expires": ac.time.time() + 900}
     ac._codex_worker(rec, {"device_auth_id": "d", "user_code": "u", "interval": 3})
     assert rec["state"] == "connected" and added[0][0] == "openai-codex" and added[0][1]["refresh_token"] == "RT"
 
@@ -262,3 +262,101 @@ def test_register_skips_non_gateway(monkeypatch):
     monkeypatch.setattr(ac, "start_server", lambda *a, **k: called.append(1))
     ac.register(SimpleNamespace(on_unload=lambda f: None))
     assert not called
+
+
+def test_missing_oauth_state_rejected(monkeypatch, server):
+    st = call(server, "POST", "/ai/signin/start", {"provider": "claude"})[1]
+    assert call(server, "POST", "/ai/credential", {"ticket": st["ticket"], "secret": "bare-code"})[0] == 400
+
+
+def test_provider_error_never_echoes_secret():
+    assert ac._clean_err(RuntimeError("opaque-credential-with-no-known-prefix"), "Try again.") == "Try again."
+
+
+def test_conflicting_key_and_id(monkeypatch, server):
+    store = FakeStore()
+    monkeypatch.setattr(ac, "_runner", lambda: SimpleNamespace(session_store=store))
+    assert call(server, "POST", "/ai/model", {"provider": "a", "model": "b", "scope": "session",
+                                             "session_key": "k1", "session_id": "s2"})[0] == 404
+
+
+def test_failed_session_write_does_not_publish(monkeypatch, server):
+    _fake_switch(monkeypatch)
+    store = FakeStore()
+    def fail(*args):
+        raise OSError("test failure")
+    store.set_model_override = fail
+    runner = SimpleNamespace(session_store=store, _session_model_overrides={})
+    monkeypatch.setattr(ac, "_runner", lambda: runner)
+    assert call(server, "POST", "/ai/model", {"provider": "a", "model": "b", "scope": "session",
+                                             "session_key": "k1"})[0] == 500
+    assert not runner._session_model_overrides
+
+
+def test_all_clears_channel_route_but_keeps_prompt(monkeypatch, server, tmp_path):
+    _fake_switch(monkeypatch)
+    cfg = tmp_path / "config.yaml"
+    cfg.write_text("model:\n  provider: anthropic\n  default: old\nplatforms:\n  discord:\n    channel_overrides:\n      '123':\n        model: old-channel\n        provider: anthropic\n        system_prompt: keep-me\n")
+    import yaml
+    import hermes_cli.model_switch as ms
+    monkeypatch.setattr(ms, "persist_model_selection", lambda r, p: None)
+    monkeypatch.setattr(ac, "_config_path", lambda: cfg)
+    monkeypatch.setattr(ac, "_load_config", lambda: yaml.safe_load(cfg.read_text()))
+    ov = SimpleNamespace(model="old-channel", provider="anthropic", system_prompt="keep-me")
+    runner = SimpleNamespace(session_store=FakeStore(), _session_model_overrides={},
+                             config=SimpleNamespace(platforms={"discord": SimpleNamespace(channel_overrides={"123": ov})}))
+    monkeypatch.setattr(ac, "_runner", lambda: runner)
+    code, _, _ = call(server, "POST", "/ai/model", {"provider": "a", "model": "b"})
+    assert code == 200 and ov.model is None and ov.provider is None and ov.system_prompt == "keep-me"
+    row = yaml.safe_load(cfg.read_text())["platforms"]["discord"]["channel_overrides"]["123"]
+    assert row == {"system_prompt": "keep-me"}
+
+
+class FakeDB:
+    def __init__(self):
+        self.row = {"id": "api-1", "source": "api_server", "title": "Browser", "model_config": {
+            "browser_model_lock": {"confirmed": True, "model": "old-api", "provider": "anthropic"}}}
+        self.locks = []
+        self.models = []
+    def list_sessions_rich(self, **kwargs):
+        return [self.row] if kwargs.get("offset", 0) == 0 else []
+    def get_session(self, sid):
+        return self.row if sid == self.row["id"] else None
+    def update_session_runtime_lock(self, sid, **kw):
+        self.locks.append((sid, kw))
+        self.row["model_config"]["browser_model_lock"] = kw
+    def update_session_model(self, sid, model, **kw):
+        self.models.append((sid, model))
+
+
+def test_api_only_session_status_and_pin(monkeypatch, server):
+    _fake_switch(monkeypatch)
+    store = FakeStore()
+    store._db = FakeDB()
+    runner = SimpleNamespace(session_store=store, _session_model_overrides={})
+    monkeypatch.setattr(ac, "_runner", lambda: runner)
+    monkeypatch.setattr(ac, "_authenticated", lambda c: [])
+    monkeypatch.setattr(ac, "_pool_summary", lambda p: [])
+    # Fake routing metadata for status.
+    from datetime import datetime
+    for e in store.entries.values():
+        e.platform, e.display_name, e.updated_at = "discord", "chat", datetime.now()
+    row = next(x for x in call(server, "GET", "/ai/status")[1]["sessions"] if x["session_id"] == "api-1")
+    assert row["model"] == "old-api" and row["override"]
+    code, body, _ = call(server, "POST", "/ai/model", {"provider": "a", "model": "b", "scope": "session", "session_id": "api-1"})
+    assert code == 200 and store._db.locks[-1][1]["confirmed"] is True
+    assert not runner._session_model_overrides  # no invented gateway routing key
+
+
+def test_all_clears_api_model_lock(monkeypatch, server):
+    _fake_switch(monkeypatch)
+    import hermes_cli.model_switch as ms
+    monkeypatch.setattr(ms, "persist_model_selection", lambda r, p: None)
+    monkeypatch.setattr(ac, "_load_config", lambda: {})
+    store = FakeStore()
+    store._db = FakeDB()
+    runner = SimpleNamespace(session_store=store, _session_model_overrides={})
+    monkeypatch.setattr(ac, "_runner", lambda: runner)
+    code, body, _ = call(server, "POST", "/ai/model", {"provider": "a", "model": "b"})
+    assert code == 200 and body["sessions_changed"] == 3
+    assert store._db.locks[-1][1]["confirmed"] is False
