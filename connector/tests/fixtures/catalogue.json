@@ -1,0 +1,189 @@
+{
+ "_source": "aiteam.space app/lib/addons.ts (slug, price per month, skills[]); refresh when the catalogue changes",
+ "addons": [
+  {
+   "slug": "cto-pack",
+   "price": 0,
+   "skills": [
+    "claude-code",
+    "github",
+    "requesting-code-review",
+    "sdlc-review",
+    "systematic-debugging",
+    "test-driven-development",
+    "ship-code-changes",
+    "verify-live-sources"
+   ]
+  },
+  {
+   "slug": "github",
+   "price": 0,
+   "skills": [
+    "github"
+   ]
+  },
+  {
+   "slug": "websites-design",
+   "price": 0,
+   "skills": [
+    "web-design",
+    "cloudflare-deploy"
+   ]
+  },
+  {
+   "slug": "site-monitor",
+   "price": 0,
+   "skills": [
+    "site-qa"
+   ]
+  },
+  {
+   "slug": "cmo-pack",
+   "price": 0,
+   "skills": [
+    "cmo-lead",
+    "brand-vocabulary",
+    "claims-check"
+   ]
+  },
+  {
+   "slug": "seo-growth",
+   "price": 5,
+   "skills": [
+    "seo-geo",
+    "content-creator",
+    "blog-playbook",
+    "humanizer",
+    "competitor-news-monitor",
+    "x-posting"
+   ]
+  },
+  {
+   "slug": "cinematic-ads",
+   "price": 20,
+   "skills": [
+    "video-reels",
+    "logo-ident",
+    "creative-direction",
+    "content-calendar"
+   ]
+  },
+  {
+   "slug": "explainer-videos",
+   "price": 10,
+   "skills": [
+    "infographic",
+    "manim-video",
+    "video-reels",
+    "content-calendar"
+   ]
+  },
+  {
+   "slug": "social-content",
+   "price": 5,
+   "skills": [
+    "social-media-manager",
+    "social-creative",
+    "x-posting",
+    "content-calendar",
+    "claims-check"
+   ]
+  },
+  {
+   "slug": "cold-email",
+   "price": 5,
+   "skills": [
+    "sales-agent",
+    "lead-research",
+    "claims-check"
+   ]
+  },
+  {
+   "slug": "pm-pack",
+   "price": 0,
+   "skills": [
+    "kanban",
+    "github-projects",
+    "notion",
+    "asana",
+    "obsidian"
+   ]
+  },
+  {
+   "slug": "team-coordination",
+   "price": 0,
+   "skills": [
+    "team-topic-awareness",
+    "team-notifications",
+    "team-sync",
+    "team-setup"
+   ]
+  },
+  {
+   "slug": "inbox-triage",
+   "price": 0,
+   "skills": [
+    "email-inbox-triage",
+    "himalaya"
+   ]
+  },
+  {
+   "slug": "calendar",
+   "price": 0,
+   "skills": [
+    "google-workspace"
+   ]
+  },
+  {
+   "slug": "docs-pdf",
+   "price": 0,
+   "skills": [
+    "pdf",
+    "docx",
+    "xlsx",
+    "powerpoint",
+    "make-pdf"
+   ]
+  },
+  {
+   "slug": "calls",
+   "price": 20,
+   "skills": [
+    "calls",
+    "aiteam-google-meet",
+    "zoom-voice",
+    "discord-voice",
+    "meeting-notes"
+   ]
+  },
+  {
+   "slug": "trading-signals",
+   "price": 15,
+   "skills": [
+    "trading-signals",
+    "hyperliquid-trading"
+   ]
+  },
+  {
+   "slug": "trading-signals-stocks",
+   "price": 15,
+   "skills": [
+    "trading-signals-stocks"
+   ]
+  },
+  {
+   "slug": "security-audit-loop",
+   "price": 20,
+   "skills": [
+    "security-audit"
+   ]
+  },
+  {
+   "slug": "uptime-breach-monitor",
+   "price": 0,
+   "skills": [
+    "uptime-monitor"
+   ]
+  }
+ ]
+}

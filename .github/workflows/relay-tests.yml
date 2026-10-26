@@ -1,0 +1,24 @@
+name: relay-tests
+# Tags + manual runs only; run the same checks locally with scripts/box-test.sh.
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: relay
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -e ".[test]"
+      - run: python -m pytest -q
+      - name: CLI entry point loads
+        run: aiteam-relay --help >/dev/null

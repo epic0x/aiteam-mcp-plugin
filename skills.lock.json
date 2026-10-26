@@ -1,0 +1,10 @@
+{
+  "aiteam-skills": {
+    "repo": "epic0x/aiteam-skills",
+    "tag": "v0.3.3",
+    "ref_sha": "fb223878fe3d8abda0fe8d0ecc3f660870cdd108",
+    "asset": "aiteam-skills-fb223878fe3d8abda0fe8d0ecc3f660870cdd108.tar.gz",
+    "sha256": "f4005b20b727504bcb445604a87ff262a28ce847f14f47cec70b9895daf936e1",
+    "skills": ["driving-chat-sessions"]
+  }
+}

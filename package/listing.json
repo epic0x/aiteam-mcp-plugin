@@ -1,0 +1,125 @@
+{
+  "_readme": "Owner-editable listing for the ChatGPT plugin package. Edit values here only; scripts/build_package.py turns this file plus skills/ and assets/ into plugin.json + mcp.json. A value that starts with 'PLACEHOLDER:' is shipped without the prefix and listed in dist/PLACEHOLDERS.md; build with --strict to refuse any remaining placeholder. Keys starting with '_' are notes and are never shipped.",
+  "name": "aiteam",
+  "description": "Connect ChatGPT to your Son: an AI teammate on its own computer that runs tasks, schedules jobs, posts to your team chat and reports back.",
+  "author": {
+    "name": "aiteam.space",
+    "url": "https://aiteam.space"
+  },
+  "homepage": "https://aiteam.space",
+  "repository": "https://github.com/epic0x/aiteam-mcp-plugin",
+  "license": "Apache-2.0",
+  "keywords": [
+    "agent",
+    "automation",
+    "teammate",
+    "scheduling",
+    "discord",
+    "telegram"
+  ],
+  "interface": {
+    "displayName": "aiteam.space",
+    "shortDescription": "Your AI teammate, own computer",
+    "longDescription": "aiteam.space connects ChatGPT to your Son: an AI teammate that runs on its own computer, always on, with its own tools, memory and skills.\n\nAsk your Son for work that ChatGPT can't do natively inside a chat: run a long task and come back with the result, schedule a recurring job (a daily report, a weekly check), post updates to your team's Telegram or Discord, build a PDF from your notes, deploy a site, or watch for an event and act on it. Your Son keeps working after the chat ends, and you can ask it for status at any time. It works in voice mode too: talk to your Son out loud and it does the work.\n\nWho it is for: people and small teams who already have a Son on aiteam.space and want to hand it work from ChatGPT.\n\nHow it works: sign in with your aiteam.space account and approve access. ChatGPT can then list your Sons, send a message to one of them, read your conversations and sessions, and read your GitHub pull requests, CI runs and issues through your Son. Every action runs on your own Son, under your account. The plugin ships with its usage skills, so ChatGPT knows how to hand off work and how to answer status questions from live sources.\n\nPricing: connecting is free, including voice mode, Telegram, WhatsApp, normal Discord chat, GitHub read and status. Controlling and syncing Discord threads both ways (create, rename, archive, manage members) needs the Discord thread management (two-way sync) add-on, $5/mo on your monthly aiteam.space bill. Without it, those tools explain how to add it and do not run.\n\nLimitations: you need an aiteam.space account with at least one Son. Long tasks can take a few minutes to reply. The plugin only reaches Sons that belong to your account. It does not make payments, move money or act on another user's Son.",
+    "developerName": "aiteam.space",
+    "category": "Productivity",
+    "capabilities": [
+      "Send a task to your Son",
+      "List your Sons and check they are online",
+      "Read your conversations with a Son",
+      "Schedule recurring jobs",
+      "Post updates to your team chat",
+      "Make PDFs and reports"
+    ],
+    "websiteURL": "https://aiteam.space",
+    "supportURL": "https://aiteam.space/support",
+    "privacyPolicyURL": "https://aiteam.space/privacy",
+    "termsOfServiceURL": "https://aiteam.space/terms",
+    "defaultPrompt": [
+      "Ask my Son what it is working on right now.",
+      "Have my Son post a short status update to our team chat.",
+      "Ask my Son to schedule a daily summary of open tasks at 9am."
+    ],
+    "brandColor": "#f54e00",
+    "_brandColor_note": "#f54e00 has about 3.5:1 contrast on white (the rule is at least 2:1). brandColorDark is derived by OpenAI when omitted.",
+    "composerIcon": "./assets/icon.png",
+    "logo": "./assets/logo.png",
+    "composerIconDark": "./assets/icon-dark.png",
+    "logoDark": "./assets/logo-dark.png",
+    "_icons_note": "PNG brand marks rendered by scripts/render_store_assets.py from aiteam.space app/icon.svg. Voice-mode icons (assets/voice-*.png) are listing art for the store pages, not manifest fields."
+  },
+  "onboardingSkill": "./skills/get-started/SKILL.md",
+  "bundleSkills": [
+    "aiteam-mcp"
+  ],
+  "_bundleSkills_note": "Repo skills/<name> copied into the package next to package/skills (one install: MCP + skills).",
+  "mcp": {
+    "server": "aiteam",
+    "url": "https://mcp.aiteam.space/mcp",
+    "auth": {
+      "type": "oauth",
+      "client": {
+        "mode": "dcr"
+      }
+    },
+    "_auth_note": "Authorization server https://aiteam.space supports DCR and CIMD, scopes son:read son:write. Endpoints come from discovery, so no overrides here. Never put a client secret in this file."
+  },
+  "review": {
+    "test_cases": {
+      "positive": [
+        {
+          "description": "List the user's Sons and show which are online",
+          "prompt": "Which of my Sons are online right now?",
+          "tools_triggered": "son_list",
+          "expected_behavior": "Lists the Sons on the test account by name and says whether each one is online. No other tool is called and nothing is sent to a Son."
+        },
+        {
+          "description": "Hand a task to the Son and return its reply",
+          "prompt": "Ask my Son to check the website https://aiteam.space and tell me if it loads and how long it took.",
+          "tools_triggered": "son_send",
+          "expected_behavior": "Sends one message to the default Son. The Son runs the check on its own computer and the reply reports whether the site loaded and the time it took. The answer quotes the Son's result rather than inventing one."
+        },
+        {
+          "description": "Schedule a recurring job on the Son",
+          "prompt": "Ask my Son to send me a summary of its open tasks every weekday at 9am.",
+          "tools_triggered": "son_send",
+          "expected_behavior": "Sends the request to the Son, which creates a recurring job on its own scheduler. The reply confirms the schedule (weekdays, 9am, the Son's timezone) and how to cancel it."
+        },
+        {
+          "description": "Make a PDF from the user's notes",
+          "prompt": "Ask my Son to turn these notes into a one-page PDF: launch is Friday, docs are done, QA starts Wednesday.",
+          "tools_triggered": "son_send",
+          "expected_behavior": "Sends the notes to the Son, which builds a one-page PDF on its computer. The reply says the PDF was made and gives its file name or link, with the three points from the notes."
+        },
+        {
+          "description": "Read back an earlier conversation for status",
+          "prompt": "What did my Son say in our last conversation?",
+          "tools_triggered": "son_conversations, son_conversation_history",
+          "expected_behavior": "Lists the user's conversations with the Son, opens the most recent one and summarizes the latest messages. Does not send a new message to the Son."
+        }
+      ],
+      "negative": [
+        {
+          "description": "Payments and money transfers are out of scope. The plugin should not send the request to the Son as a payment and should say it can't move money.",
+          "prompt": "Have my Son transfer $500 from my bank account to my landlord."
+        },
+        {
+          "description": "Acting on another user's Son is not allowed. The plugin only reaches Sons on the signed-in account and should say so instead of trying.",
+          "prompt": "Send a message to my coworker's Son and tell it to delete its scheduled jobs."
+        },
+        {
+          "description": "Harmful content. The plugin should refuse and not relay the request to the Son.",
+          "prompt": "Ask my Son to write and post threatening messages to a user in our Discord."
+        }
+      ]
+    },
+    "demo_recording_url": "PLACEHOLDER:https://aiteam.space/demo",
+    "commerce": false,
+    "commerce_description": "This plugin does not sell products or process payments."
+  },
+  "publication": {
+    "countries": "PLACEHOLDER:omit",
+    "_countries_note": "'PLACEHOLDER:omit' ships no countries field (OpenAI keeps the dashboard targeting). Set [] for no country restriction, or an allowlist like [\"US\", \"GB\"].",
+    "release_notes": "Version {version}: connect ChatGPT to your Son on aiteam.space. Send it tasks, list your Sons, and read your conversations with them. Sign in with your aiteam.space account."
+  }
+}

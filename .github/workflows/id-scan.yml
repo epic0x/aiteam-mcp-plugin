@@ -1,0 +1,31 @@
+name: id-scan
+
+# Public repo hygiene: no host names, personal emails, chat IDs, home paths or secrets in any tracked file.
+# Names of our own people and orgs come from the ID_SCAN_DENY Actions secret (one regex per line), never a file.
+# Tags + manual runs only; run the same checks locally with scripts/box-test.sh. (deny terms from
+# ID_SCAN_DENY or the git-ignored .id-scan-deny.txt). Tag and manual runs keep ID_SCAN_DENY_REQUIRED=true.
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+    env:
+      ID_SCAN_DENY: ${{ secrets.ID_SCAN_DENY }}
+      ID_SCAN_DENY_REQUIRED: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: python3 scripts/test_id_scan.py
+      - run: python3 scripts/id_scan.py

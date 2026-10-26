@@ -1,0 +1,51 @@
+name: release
+# Build the ChatGPT plugin submission ZIP on a version tag and attach it to the GitHub release.
+# The build is non-strict: remaining PLACEHOLDER values are listed in the release notes, not a failure.
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing tag to (re)build and attach, e.g. v0.1.0"
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  package:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      ID_SCAN_DENY: ${{ secrets.ID_SCAN_DENY }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref }}
+          fetch-depth: 0
+      - name: Tag must be on main
+        run: |
+          git fetch --no-tags origin +refs/heads/main:refs/remotes/origin/main
+          bash scripts/tag_on_main.sh "$TAG" origin/main
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Test the package builder
+        run: |
+          python -m pip install pytest
+          python -m pytest -q tests/test_package.py
+      - name: Build the ZIP
+        run: |
+          case "$TAG" in v*) ;; *) echo "::error::tag must start with v, got '$TAG'"; exit 1;; esac
+          python3 scripts/build_package.py --version "${TAG#v}" --out dist
+          cat dist/PLACEHOLDERS.md >> "$GITHUB_STEP_SUMMARY"
+      - name: Create or update the GitHub release
+        run: |
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" dist/*.zip --clobber
+          else
+            gh release create "$TAG" dist/*.zip --title "$TAG" --notes-file dist/RELEASE_NOTES.md --verify-tag
+          fi
