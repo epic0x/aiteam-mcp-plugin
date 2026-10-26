@@ -1,6 +1,6 @@
 # AI sign-in and model: `ai_*` tools
 
-Set which AI a Son thinks with, from Claude or ChatGPT, with no dashboard and no secret in the chat. These tools make
+Set which AI a Son thinks with, from Claude or ChatGPT, without a terminal and without putting credentials in chat. These tools make
 no model call on the Son, so they work on a brand-new Son before any provider is signed in (onboarding: `ai_status`,
 then `ai_signin_start`). All five are free (never gated by entitlements).
 
@@ -38,5 +38,40 @@ result carries `secure_link`, never a `ticket` key. If the Son id is unknown the
 and says to use the Son's page on aiteam.space.
 
 - Claude: open the provider link, sign in, paste the code Claude shows on the aiteam.space link.
-- ChatGPT: open the provider link and type the user code; nothing to paste (the link is optional).
+- ChatGPT: open the provider link and type the user code; nothing to paste. Use `ai_signin_status` to check progress.
 - API keys: paste the key on the aiteam.space link.
+
+## Gateway plugin installation
+
+Copy `hermes-plugin/aiteam-ai-control/{plugin.yaml,__init__.py}` into
+`$HERMES_HOME/plugins/aiteam-ai-control/`, then run `hermes plugins enable aiteam-ai-control`.
+The current Hermes gateway supports plugin live reload; confirm the CLI reports that the gateway reloaded it.
+Do not restart a gateway carrying active jobs just to apply a model choice. On older Hermes releases without
+live reload, schedule installation during the operator's normal upgrade window.
+
+The plugin listens only in the `hermes gateway run` process, on loopback port 8651 (override with
+`AITEAM_AI_CONTROL_PORT`). All endpoints require the Son's existing `API_SERVER_KEY`. Standalone chats and cron
+workers do not bind the port. A plugin unload shuts down its listener. Missing key fails closed.
+
+In a box with more than one Son target, set `ai_control.son` to the local Son's name. A caller whose Son allow-list
+does not include that target receives 403 on every AI-control endpoint. An ambiguous multi-Son box receives 503.
+
+Model changes take effect on the next turn. In-flight jobs retain their clients and finish normally. Session scope
+persists just that session's route. All scope writes the global default, clears gateway and API/browser session pins,
+and removes channel model/provider overrides while keeping their prompts. Other Hermes profiles are not modified.
+A separate, already-running CLI process retains its current runtime until it adopts configuration or resumes.
+
+Sign-in tickets are random, stored only as SHA-256 hashes in the Son process, expire after 15 minutes, and cannot
+be reused after a successful submission. A gateway restart invalidates pending tickets. Claude exchange requires
+the complete `code#state` from the matching PKCE request. Provider errors are mapped to static copy, not echoed.
+
+## Tests
+
+Run connector tests from `connector/` using the project's test extra. Run the plugin test file with a Hermes-enabled
+Python environment and an isolated `HERMES_HOME`, never the live profile. The plugin suite covers authentication,
+model persistence and session isolation, API/browser locks, no interruption of running jobs, ticket expiry/replay,
+mandatory OAuth state, and credential-free responses and logs.
+
+The hosted secure entry page and the Son gate route are companion deployments. Publishing this package alone does
+not deploy those components or upgrade existing customer containers. Verify the page, gate, plugin and connector
+as a single path before describing sign-in as live.
