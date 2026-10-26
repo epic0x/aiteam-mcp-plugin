@@ -1,19 +1,20 @@
 {
   "name": "aiteam",
-  "version": "0.1.7",
+  "displayName": "aiteam.space",
+  "version": "0.1.8",
   "icon": "./.claude-plugin/icon.png",
   "documentationUrl": "https://aiteam.space/help/connect",
   "supportUrl": "https://aiteam.space/support",
-  "termsOfServiceUrl": "https://aiteam.space/terms",
+  "termsOfServiceUrl": "https://aiteam.space/legal/terms",
   "description": "aiteam.space for Claude: connect to your Son, an AI teammate on its own computer, with the skills that tell Claude how to hand off work, steer it in one thread per task, and answer status questions from live sources. Works in Claude voice/live mode.",
   "author": {
     "name": "aiteam.space",
-    "url": "https://aiteam.space"
+    "url": "https://github.com/epic0x"
   },
   "homepage": "https://aiteam.space",
   "repository": "https://github.com/epic0x/aiteam-mcp-plugin",
   "license": "Apache-2.0",
-  "privacyPolicyUrl": "https://aiteam.space/privacy",
+  "privacyPolicyUrl": "https://aiteam.space/legal/privacy",
   "keywords": [
     "agent",
     "automation",
