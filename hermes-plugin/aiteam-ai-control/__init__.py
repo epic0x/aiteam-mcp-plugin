@@ -355,11 +355,13 @@ def set_model(body: dict) -> dict:
         db = _state_db(runner)
         if db is not None:
             row = db.get_session(entry.session_id)
+            # Hermes update_session_model intentionally clears browser_model_lock. Write that
+            # metadata first, then install the confirmed API lock, never the other way around.
+            db.update_session_model(entry.session_id, result.new_model, provider=result.target_provider,
+                                    base_url=result.base_url, api_mode=result.api_mode)
             if row and row.get("source") in API_SOURCES:
                 db.update_session_runtime_lock(entry.session_id, model=result.new_model,
                     provider=result.target_provider, route_source="raw_request", confirmed=True)
-            db.update_session_model(entry.session_id, result.new_model, provider=result.target_provider,
-                                    base_url=result.base_url, api_mode=result.api_mode)
         if entry.session_key:
             runner.session_store.set_model_override(entry.session_key, override)  # sanitizes non-secret keys only
             runner._session_model_overrides[entry.session_key] = override

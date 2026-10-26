@@ -327,6 +327,8 @@ class FakeDB:
         self.row["model_config"]["browser_model_lock"] = kw
     def update_session_model(self, sid, model, **kw):
         self.models.append((sid, model))
+        # Match Hermes's real contract: a normal model metadata write drops the Browser lock.
+        self.row["model_config"].pop("browser_model_lock", None)
 
 
 def test_api_only_session_status_and_pin(monkeypatch, server):
@@ -347,6 +349,7 @@ def test_api_only_session_status_and_pin(monkeypatch, server):
     assert row["model"] == "old-api" and row["override"]
     code, body, _ = call(server, "POST", "/ai/model", {"provider": "a", "model": "b", "scope": "session", "session_id": "api-1"})
     assert code == 200 and store._db.locks[-1][1]["confirmed"] is True
+    assert ac._api_lock(store._db.row)["model"] == "gpt-5.5"
     assert set(runner._session_model_overrides) == {"api-routing-key"}  # only the matching routing entry
 
 
