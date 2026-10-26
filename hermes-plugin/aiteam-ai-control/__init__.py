@@ -227,7 +227,10 @@ def status() -> dict:
         try:
             live = getattr(runner, "_session_model_overrides", {}) or {}
             for e in runner.session_store.list_sessions():
-                ov = live.get(e.session_key) or e.model_override or _channel_route(runner, e)
+                api_db = _state_db(runner)
+                api_row = api_db.get_session(e.session_id) if api_db is not None else None
+                api_pin = _api_lock(api_row) if api_row and api_row.get("source") in API_SOURCES else {}
+                ov = live.get(e.session_key) or e.model_override or api_pin or _channel_route(runner, e)
                 plat = getattr(e.platform, "value", e.platform)
                 sessions.append({
                     "session_key": e.session_key, "session_id": e.session_id,

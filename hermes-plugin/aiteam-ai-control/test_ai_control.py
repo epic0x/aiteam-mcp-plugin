@@ -337,15 +337,17 @@ def test_api_only_session_status_and_pin(monkeypatch, server):
     monkeypatch.setattr(ac, "_runner", lambda: runner)
     monkeypatch.setattr(ac, "_authenticated", lambda c: [])
     monkeypatch.setattr(ac, "_pool_summary", lambda p: [])
-    # Fake routing metadata for status.
+    # API sessions can also have a gateway routing row. That duplicate must not hide its API lock.
     from datetime import datetime
+    store.entries["api-routing-key"] = SimpleNamespace(session_key="api-routing-key", session_id="api-1",
+        model_override=None, platform="api_server", display_name="Browser", updated_at=datetime.now())
     for e in store.entries.values():
         e.platform, e.display_name, e.updated_at = "discord", "chat", datetime.now()
     row = next(x for x in call(server, "GET", "/ai/status")[1]["sessions"] if x["session_id"] == "api-1")
     assert row["model"] == "old-api" and row["override"]
     code, body, _ = call(server, "POST", "/ai/model", {"provider": "a", "model": "b", "scope": "session", "session_id": "api-1"})
     assert code == 200 and store._db.locks[-1][1]["confirmed"] is True
-    assert not runner._session_model_overrides  # no invented gateway routing key
+    assert set(runner._session_model_overrides) == {"api-routing-key"}  # only the matching routing entry
 
 
 def test_all_clears_api_model_lock(monkeypatch, server):
