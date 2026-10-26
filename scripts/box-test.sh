@@ -3,7 +3,7 @@
 # TESTS ONLY: no release, no GitHub release upload, no secrets, no network writes.
 #
 #   scripts/box-test.sh   # id-scan (self-test + scan), connector tests + CLI entry points, relay tests + CLI entry point,
-#                         # package builder tests + non-strict package build (into a temp dir)
+#                         # package builder tests + strict package build (into a temp dir)
 #
 # id-scan deny terms come from $ID_SCAN_DENY or the git-ignored .id-scan-deny.txt (same as a local run of
 # scripts/id_scan.py). With neither, the generic rules still run and the summary says the deny terms were not checked.
@@ -80,7 +80,7 @@ run relay-tests relay
 package() {
   mkvenv "$VENV_ROOT/package" pytest
   "$VENV_ROOT/package/bin/python" -m pytest -q tests/test_package.py
-  PATH="$VENV_ROOT/package/bin:$PATH" python3 scripts/build_package.py --version 0.0.0-check --out "$WORK/dist"
+  PATH="$VENV_ROOT/package/bin:$PATH" python3 scripts/build_package.py --version 0.0.0-check --strict --out "$WORK/dist"
 }
 run package-check package
 skip release "never from this box (tag-on-main + GitHub release upload: release.yml on a v* tag)"

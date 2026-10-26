@@ -504,9 +504,16 @@ def build(src: pathlib.Path, out: pathlib.Path, version: str | None, strict: boo
     leaks = leak_scan(src, root)
     errors += [f"leak scan: {h}" for h in leaks]
 
+    review_notes = []
+    if not plugin["extensions"]["com.openai"].get("review", {}).get("demo_recording_url"):
+        review_notes = ["", "## MCP review prerequisite", "",
+                        "A reviewer-accessible video walkthrough URL is still required before MCP review. "
+                        "It is optional in the ZIP; provide a real URL in the review form or a later package. "
+                        "Domain verification and a reviewer test account must also be completed in the portal."]
     report = ["# Placeholders", "",
               f"Package {stem}. Replace these in package/listing.json (or package/assets/) before submitting.", ""]
-    report += [f"- `{p}`: {v}" for p, v in found] or ["None. The package is ready to submit."]
+    report += [f"- `{p}`: {v}" for p, v in found] or ["None. The package is ready to upload."]
+    report += review_notes
     (out / "PLACEHOLDERS.md").write_text("\n".join(report) + "\n", encoding="utf-8")
 
     zpath = out / f"{stem}.zip"
@@ -523,7 +530,8 @@ def build(src: pathlib.Path, out: pathlib.Path, version: str | None, strict: boo
         notes += ["## Placeholders still in this build", "", "Replace before submitting for review:", ""]
         notes += [f"- `{p}`: {v}" for p, v in found]
     else:
-        notes += ["No placeholders: ready to submit."]
+        notes += ["No placeholders: ready to upload."]
+    notes += review_notes
     (out / "RELEASE_NOTES.md").write_text("\n".join(notes) + "\n", encoding="utf-8")
     return {"version": version, "root": root, "zip": zpath, "placeholders": found, "errors": errors}
 

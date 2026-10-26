@@ -33,8 +33,8 @@
     ],
     "websiteURL": "https://aiteam.space",
     "supportURL": "https://aiteam.space/support",
-    "privacyPolicyURL": "https://aiteam.space/privacy",
-    "termsOfServiceURL": "https://aiteam.space/terms",
+    "privacyPolicyURL": "https://aiteam.space/legal/privacy",
+    "termsOfServiceURL": "https://aiteam.space/legal/terms",
     "defaultPrompt": [
       "Ask my Son what it is working on right now.",
       "Have my Son post a short status update to our team chat.",
@@ -113,13 +113,12 @@
         }
       ]
     },
-    "demo_recording_url": "PLACEHOLDER:https://aiteam.space/demo",
+    "_demo_note": "No walkthrough URL is published yet. demo_recording_url is optional in the ZIP but required for MCP review; provide a real reviewer-accessible recording in the portal or a later package.",
     "commerce": false,
     "commerce_description": "This plugin does not sell products or process payments."
   },
   "publication": {
-    "countries": "PLACEHOLDER:omit",
-    "_countries_note": "'PLACEHOLDER:omit' ships no countries field (OpenAI keeps the dashboard targeting). Set [] for no country restriction, or an allowlist like [\"US\", \"GB\"].",
+    "_countries_note": "Country targeting is deliberately omitted to preserve existing dashboard targeting. Set [] only to remove all country restrictions, or set an explicit allowlist.",
     "release_notes": "Version {version}: connect ChatGPT to your Son on aiteam.space. Send it tasks, list your Sons, and read your conversations with them. Sign in with your aiteam.space account."
   }
 }

@@ -1,5 +1,5 @@
 name: package-check
-# The ChatGPT plugin package: run the builder tests and a non-strict build.
+# The ChatGPT plugin package: run the builder tests and a strict build.
 # Tags + manual runs only. release.yml runs the same builder tests on every v* tag;
 # locally: scripts/box-test.sh.
 on:
@@ -21,7 +21,7 @@ jobs:
           python-version: "3.12"
       - run: python -m pip install pytest
       - run: python -m pytest -q tests/test_package.py
-      - name: Build (placeholders reported, not fatal)
+      - name: Build (no placeholders)
         run: |
-          python3 scripts/build_package.py --version 0.0.0-check --out dist
+          python3 scripts/build_package.py --version 0.0.0-check --strict --out dist
           cat dist/PLACEHOLDERS.md >> "$GITHUB_STEP_SUMMARY"

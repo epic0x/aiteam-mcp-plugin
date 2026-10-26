@@ -52,9 +52,9 @@ def no_placeholders(src: pathlib.Path) -> None:
     def fix(d):
         i = d["interface"]
         i["supportURL"] = "https://aiteam.space/support"
-        i["privacyPolicyURL"] = "https://aiteam.space/privacy"
-        i["termsOfServiceURL"] = "https://aiteam.space/terms"
-        d["review"]["demo_recording_url"] = "https://aiteam.space/demo"
+        i["privacyPolicyURL"] = "https://aiteam.space/legal/privacy"
+        i["termsOfServiceURL"] = "https://aiteam.space/legal/terms"
+        d["review"]["demo_recording_url"] = "https://example.com/walkthrough"
         d["publication"]["countries"] = []
     edit_listing(src, fix)
     for name in build_package.FINAL_PNGS.values():
@@ -70,6 +70,20 @@ def make_png(w: int, h: int) -> bytes:
         return struct.pack(">I", len(d)) + t + d + struct.pack(">I", zlib.crc32(t + d))
     return (b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack(">IIBBBBB", w, h, 8, 2, 0, 0, 0))
             + chunk(b"IDAT", zlib.compress(raw)) + chunk(b"IEND", b""))
+
+
+def test_omitted_demo_allows_upload_but_reports_review_prerequisite(src_copy, tmp_path):
+    no_placeholders(src_copy)
+    edit_listing(src_copy, lambda d: d["review"].pop("demo_recording_url", None))
+    out = tmp_path / "out"
+    r = run("--version", VERSION, "--src", str(src_copy), "--out", str(out), "--strict")
+    assert r.returncode == 0, r.stdout + r.stderr
+    plugin = json.loads((out / STEM / "plugin.json").read_text())
+    assert "demo_recording_url" not in plugin["extensions"]["com.openai"]["review"]
+    for name in ("PLACEHOLDERS.md", "RELEASE_NOTES.md"):
+        report = (out / name).read_text()
+        assert "video walkthrough URL is still required before MCP review" in report
+        assert "ready to submit" not in report
 
 
 # ------------------------------------------------------------------------------------------- layout
@@ -139,26 +153,53 @@ def test_skill_frontmatter(built):
     assert meta["name"] == "get-started" and meta["description"]
 
 
-def test_placeholder_report_written(built):
-    rep = (built / "PLACEHOLDERS.md").read_text()
-    assert "review.demo_recording_url" in rep and "interface.supportURL" not in rep   # /support is live
-    assert "interface.privacyPolicyURL" not in rep and "placeholder image" not in rep   # real pages + brand PNGs
-    notes = (built / "RELEASE_NOTES.md").read_text()
+def with_placeholders(src: pathlib.Path) -> None:
+    def mark(d):
+        d["review"]["demo_recording_url"] = "PLACEHOLDER:https://example.com/demo"
+        d["publication"]["countries"] = "PLACEHOLDER:omit"
+    edit_listing(src, mark)
+
+
+def test_placeholder_report_written(src_copy, tmp_path):
+    with_placeholders(src_copy)
+    out = tmp_path / "out"
+    r = run("--version", VERSION, "--src", str(src_copy), "--out", str(out))
+    assert r.returncode == 0, r.stdout + r.stderr
+    rep = (out / "PLACEHOLDERS.md").read_text()
+    assert "review.demo_recording_url" in rep and "interface.supportURL" not in rep
+    assert "publication.countries" in rep
+    assert "interface.privacyPolicyURL" not in rep and "placeholder image" not in rep
+    notes = (out / "RELEASE_NOTES.md").read_text()
     assert "Placeholders still in this build" in notes
 
 
 # ------------------------------------------------------------------------------------------- strict / failures
-def test_strict_fails_with_placeholders(tmp_path):
-    r = run("--version", VERSION, "--out", str(tmp_path), "--strict")
+
+def test_strict_fails_with_placeholders(src_copy, tmp_path):
+    with_placeholders(src_copy)
+    r = run("--version", VERSION, "--src", str(src_copy), "--out", str(tmp_path / "out"), "--strict")
     assert r.returncode == 1
     assert "placeholder" in r.stderr.lower()
 
 
-def test_non_strict_passes_with_placeholders(tmp_path):
-    r = run("--version", VERSION, "--out", str(tmp_path))
+def test_non_strict_passes_with_placeholders(src_copy, tmp_path):
+    with_placeholders(src_copy)
+    out = tmp_path / "out"
+    r = run("--version", VERSION, "--src", str(src_copy), "--out", str(out))
     assert r.returncode == 0, r.stderr
-    assert (tmp_path / f"{STEM}.zip").is_file()
+    assert (out / f"{STEM}.zip").is_file()
 
+
+def test_shipped_listing_passes_strict_without_fake_demo_or_targeting(tmp_path):
+    r = run("--version", VERSION, "--out", str(tmp_path), "--strict")
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert "Placeholders: none" in r.stdout
+    plugin = json.loads((tmp_path / STEM / "plugin.json").read_text())
+    ext = plugin["extensions"]["com.openai"]
+    assert "demo_recording_url" not in ext["review"]
+    assert "countries" not in ext["publication"]
+    assert ext["interface"]["privacyPolicyURL"] == "https://aiteam.space/legal/privacy"
+    assert ext["interface"]["termsOfServiceURL"] == "https://aiteam.space/legal/terms"
 
 def test_strict_passes_when_placeholders_replaced(src_copy, tmp_path):
     no_placeholders(src_copy)

@@ -3,28 +3,33 @@
 Owner steps. Everything you paste is listed below each step. The package source is `package/listing.json`
 (every listing value lives there), `package/skills/get-started/SKILL.md` and `package/assets/`.
 
-## 0. Before you submit: replace the placeholders
+## 0. Before you submit: strict package and review prerequisites
 Tags ship only from main: the release workflow fails when the tag's commit is not on `main` (`scripts/tag_on_main.sh`).
 
-Each release lists the placeholders still in the build (release notes and `dist/PLACEHOLDERS.md`). Today:
+Both the release workflow and package check run `build_package.py --strict`: unresolved placeholders fail the build.
+The package includes the brand PNGs and canonical live URLs:
 
-| Value | Where | Now |
-| --- | --- | --- |
-| Support URL | `listing.json` `interface.supportURL` | `PLACEHOLDER:https://aiteam.space/support` (page does not exist yet) |
-| Privacy policy URL | `interface.privacyPolicyURL` | `PLACEHOLDER:https://aiteam.space/privacy` |
-| Terms of service URL | `interface.termsOfServiceURL` | `PLACEHOLDER:https://aiteam.space/terms` |
-| Demo video URL | `review.demo_recording_url` | `PLACEHOLDER:https://aiteam.space/demo` (record the 5 positive cases) |
-| Countries | `publication.countries` | `PLACEHOLDER:omit` (no field shipped). `[]` = no restriction, or `["US", "GB"]` |
-| Icon + logo | `package/assets/icon.png`, `icon-dark.png`, `logo.png`, `logo-dark.png` | not there yet (the build ships neutral SVG placeholders). Add the four square PNGs (48 to 4096 px, <= 5 MiB) and point `composerIcon`, `composerIconDark`, `logo`, `logoDark` at them. `--strict` fails until all four exist. No screenshot: OpenAI asks for none when the plugin has no UI |
+- Support: `https://aiteam.space/support`
+- Privacy: `https://aiteam.space/legal/privacy`
+- Terms: `https://aiteam.space/legal/terms`
+- Icons: `package/assets/icon.png`, `icon-dark.png`, `logo.png`, `logo-dark.png`
 
-To confirm a value, drop the `PLACEHOLDER:` prefix. `python3 scripts/build_package.py --version X --strict` fails while
-any placeholder remains; the release build is non-strict and lists them instead.
+`review.demo_recording_url` is omitted until a real reviewer-accessible walkthrough is available.
+It is optional for ZIP upload but **required before MCP review**. Record the five positive cases and add
+its real HTTPS URL to the package, then upload a new version if the portal marks this field as ZIP-managed.
+Do not substitute the website or a URL that returns 404 for a recording.
+
+`publication.countries` is deliberately omitted to preserve existing targeting. Set `[]` only to remove country
+restrictions, or use an explicit allowlist. Omission is not a claim that all countries are enabled.
+
+The release notes and `dist/PLACEHOLDERS.md` distinguish a placeholder-free upload from completion of the portal
+review prerequisites: walkthrough, reviewer test account, domain verification and tool scan.
 
 ## 1. Get the ZIP
 1. Push a tag `vX.Y.Z` on main (the release workflow builds the ZIP and attaches it), or run the **release** workflow
    by hand with an existing tag.
 2. Open the repo's **Releases** page, latest release, download `aiteam-chatgpt-plugin-X.Y.Z.zip`.
-3. Local build instead: `python3 scripts/build_package.py --version X.Y.Z` writes `dist/aiteam-chatgpt-plugin-X.Y.Z.zip`.
+3. Local build instead: `python3 scripts/build_package.py --version X.Y.Z --strict` writes `dist/aiteam-chatgpt-plugin-X.Y.Z.zip`.
 
 Each new upload needs a new version number (`plugin_version_unchanged` otherwise).
 
@@ -58,7 +63,7 @@ Each new upload needs a new version number (`plugin_version_unchanged` otherwise
 - Short description: `Your AI teammate, own computer`
 - Category: `Productivity`
 - Website: `https://aiteam.space`
-- Support / privacy / terms: see the placeholder table above
+- Support / privacy / terms: see the canonical URLs above
 - MCP server: `aiteam` at `https://mcp.aiteam.space/mcp`, OAuth (DCR)
 - Test cases: 5 positive, 3 negative (`listing.json` `review.test_cases`)
 
@@ -71,7 +76,7 @@ Each new upload needs a new version number (`plugin_version_unchanged` otherwise
    - Short description: `Your AI teammate, own computer`
    - Long description: `interface.longDescription` from `package/listing.json`
    - Website: `https://aiteam.space`
-   - Support, privacy policy, terms: the final URLs from the placeholder table
+   - Support, privacy policy, terms: the canonical URLs above
    - Authentication: OAuth (aiteam.space supports dynamic client registration and client metadata documents)
    - Example prompts: the three `interface.defaultPrompt` values
    - Logo: `package/assets/logo.png` (voice-mode art: `voice-claude.png`, `voice-chatgpt.png`; see docs/store/LISTINGS.md)

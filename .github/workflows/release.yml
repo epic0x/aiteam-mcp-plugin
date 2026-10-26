@@ -1,6 +1,6 @@
 name: release
 # Build the ChatGPT plugin submission ZIP on a version tag and attach it to the GitHub release.
-# The build is non-strict: remaining PLACEHOLDER values are listed in the release notes, not a failure.
+# Release packages must have no unresolved placeholders (--strict).
 on:
   push:
     tags: ["v*"]
@@ -40,7 +40,7 @@ jobs:
       - name: Build the ZIP
         run: |
           case "$TAG" in v*) ;; *) echo "::error::tag must start with v, got '$TAG'"; exit 1;; esac
-          python3 scripts/build_package.py --version "${TAG#v}" --out dist
+          python3 scripts/build_package.py --version "${TAG#v}" --strict --out dist
           cat dist/PLACEHOLDERS.md >> "$GITHUB_STEP_SUMMARY"
       - name: Create or update the GitHub release
         run: |
