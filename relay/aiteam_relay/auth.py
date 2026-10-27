@@ -93,4 +93,16 @@ async def verify_relay_jwt(token: str, *, jwks, issuer: str, resource: str, now:
         return None
     if not any(s in str(claims.get("scope", "")).split() for s in SCOPES):
         return None
+    # Versioned target claims are structurally distinct from the legacy singleton.
+    # Membership/ownership remain the authorization server's duty on EACH target exchange.
+    if "grant_v" in claims or "son_ids" in claims:
+        ids = claims.get("son_ids")
+        if type(claims.get("grant_v")) is not int or claims["grant_v"] != 2:
+            return None
+        if ("son_id" in claims or not isinstance(ids, list) or not 1 <= len(ids) <= 32
+            or any(not isinstance(i, str) or not i or len(i) > 128 for i in ids)
+            or len(set(ids)) != len(ids)
+            or any(not isinstance(claims.get(k), str) or not claims[k].strip()
+                   for k in ("sub", "client_id", "gid"))):
+            return None
     return claims

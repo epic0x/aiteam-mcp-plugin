@@ -70,11 +70,11 @@ class Exchanger:
         self.token_url = token_url
         self.suffix = suffix
         self.relay_host = relay_host
-        self.cache: dict[str, Exchanged] = {}
+        self.cache: dict[tuple[str, str | None], Exchanged] = {}
         self.calls = 0  # exchanges sent (tests, metrics)
 
-    def drop(self, subject_token: str) -> None:
-        self.cache.pop(token_key(subject_token), None)
+    def drop(self, subject_token: str, son_id: str | None = None) -> None:
+        self.cache.pop((token_key(subject_token), son_id), None)
 
     def _prune(self, now: float) -> None:
         for k in [k for k, v in self.cache.items() if v.expires_at <= now]:
@@ -82,13 +82,14 @@ class Exchanger:
         while len(self.cache) >= CACHE_MAX:
             self.cache.pop(next(iter(self.cache)))
 
-    async def get(self, subject_token: str, subject_exp: float | None = None) -> Exchanged:
+    async def get(self, subject_token: str, subject_exp: float | None = None,
+                  son_id: str | None = None) -> Exchanged:
         now = time.time()
-        key = token_key(subject_token)
+        key = (token_key(subject_token), son_id)
         hit = self.cache.get(key)
         if hit and hit.expires_at > now:
             return hit
-        ex = await self._exchange(subject_token, now)
+        ex = await self._exchange(subject_token, now, son_id)
         cache_until = ex.expires_at - CACHE_SKEW
         if subject_exp is not None:
             cache_until = min(cache_until, float(subject_exp) - CACHE_SKEW)
@@ -97,9 +98,11 @@ class Exchanger:
             self.cache[key] = Exchanged(ex.access_token, ex.son_mcp_url, cache_until)
         return ex
 
-    async def _exchange(self, subject_token: str, now: float) -> Exchanged:
+    async def _exchange(self, subject_token: str, now: float, son_id: str | None = None) -> Exchanged:
         self.calls += 1
         form = {"grant_type": GRANT_TYPE, "subject_token": subject_token, "subject_token_type": ACCESS_TOKEN_TYPE}
+        if son_id is not None:
+            form["son_id"] = son_id
         try:
             r = await self.client.post(self.token_url, data=form, headers={"Accept": "application/json"}, timeout=10)
         except httpx.HTTPError as e:
