@@ -19,7 +19,7 @@ async def test_intro_served_as_prompt_and_resource(stack):  # noqa: F811
     conn = Connector([SonLink("my-son", box_url, "alice-token")], passthrough="none")
     async with create_connected_server_and_client_session(build_server(conn)) as client:
         prompts = (await client.list_prompts()).prompts
-        assert [p.name for p in prompts] == [INTRO_PROMPT]
+        assert [p.name for p in prompts][0] == INTRO_PROMPT  # who_we_are first, then setup_aiteam
         got = await client.get_prompt(INTRO_PROMPT)
         assert OPENING in got.messages[0].content.text
         res = (await client.list_resources()).resources

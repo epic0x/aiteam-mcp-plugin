@@ -12,12 +12,14 @@ from __future__ import annotations
 import mcp.types as types
 
 from .intro import INTRO, INTRO_SHORT
+from .setup_flow import SETUP_GUIDE, SETUP_TRIGGER
 
-GUIDE_VERSION = "10"
+GUIDE_VERSION = "11"
 
 INSTRUCTIONS = (
     INTRO_SHORT + " Introduce us this way when the user first connects (prompt who_we_are, resource "
     "aiteam://who-we-are). "
+    + SETUP_TRIGGER +
     "STANDING RULE 0, before anything else: when anyone asks for updates or status ('what are the updates', 'what is "
     "everyone doing', 'what happened since yesterday', 'where are we on X'), never answer 'nothing is running' or 'I "
     "have no sessions' from memory. First check the live sources in one sweep (your own recent messages and past "
@@ -206,7 +208,7 @@ Son before anything is signed in.
 - `ai_signin_status` says waiting, connected, failed or expired. Check it after the user says they are done.
 - `ai_model_set` switches the provider and model for every session (default) or pins one session. `ai_fallback_set`
   sets the order your Son falls back to when the main model fails. The provider must be signed in first.
-
+""" + SETUP_GUIDE + """
 ## Always
 - Sign the last line of anything you post: `— <user> from <app>`, for example `— Sam from ChatGPT`.
 - If a tool returns an error, say so and stop. Never invent a result.
@@ -222,7 +224,7 @@ GUIDE_TOOLS = ("messages_send", "conversations_list", "sessions_list", "sessions
                "discord_thread_member_add", "discord_thread_member_remove", "discord_thread_members",
                "telegram_topics_list", "telegram_topic_messages", "telegram_topic_send", "telegram_topic_create",
                "telegram_topic_edit", "telegram_chat_get", "ping", "health", "cleanup",
-               "ai_status", "ai_signin_start", "ai_signin_status", "ai_model_set", "ai_fallback_set")
+               "ai_status", "ai_signin_start", "ai_signin_status", "ai_model_set", "ai_fallback_set", "son_list")
 
 
 def usage_guide_tool() -> types.Tool:

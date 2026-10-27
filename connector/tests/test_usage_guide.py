@@ -51,7 +51,7 @@ def test_guide_only_names_tools_that_exist():
     from aiteam_connector.server import AI_TOOLS, DISCORD_THREAD_TOOLS, HEALTH_TOOLS, TELEGRAM_TOOLS, native_tools
     known = ({t.name for t in native_tools(["my-son"])} | set(GITHUB_TOOLS) | UPSTREAM | {"usage_guide"}
              | set(DISCORD_THREAD_TOOLS) | set(TELEGRAM_TOOLS) | set(HEALTH_TOOLS) | set(AI_TOOLS))
-    ARGS = {"topic_id", "chat_id", "reply_to_message_id", "add_user_ids", "member_id", "member_of", "is_member", "include_members"}
+    ARGS = {"setup_aiteam", "topic_id", "chat_id", "reply_to_message_id", "add_user_ids", "member_id", "member_of", "is_member", "include_members"}
     named = (set(re.findall(r"`([a-z]+_[a-z_]+)`", GUIDE)) - ARGS) | set(GUIDE_TOOLS)
     assert named <= known, f"guide names unknown tools: {sorted(named - known)}"
 

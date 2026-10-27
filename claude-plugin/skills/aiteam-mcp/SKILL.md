@@ -1,7 +1,7 @@
 ---
 name: aiteam-mcp
 description: Use when connected to an aiteam.space Son through the aiteam MCP connector (Claude or ChatGPT). Who we are (the Sons of Davis, introduced on connect), then how to hand a task to Sons, keep one Discord thread per task, run headless work, and answer 'what are the updates?'.
-version: 1.10.0
+version: 1.11.0
 license: Apache-2.0
 ---
 <!-- Generated from connector/aiteam_connector/usage_guide.py by scripts/build_skill.py. Edit the guide, not this file. -->
@@ -186,6 +186,45 @@ Son before anything is signed in.
 - `ai_signin_status` says waiting, connected, failed or expired. Check it after the user says they are done.
 - `ai_model_set` switches the provider and model for every session (default) or pins one session. `ai_fallback_set`
   sets the order your Son falls back to when the main model fails. The provider must be signed in first.
+
+## 10. Guided first run: "help me set up aiteam"
+When the user says "help me set up aiteam" (or "set up my Son", "get me started"), walk them through these steps.
+One step at a time. Ask, wait for the answer, act, confirm, then move on. Keep each message short: the user may be
+in voice mode. The prompt `setup_aiteam` starts the same walk-through.
+
+**Step 0. Is there a Son?** Call `son_list`.
+- No Son, or not signed in: send them to https://aiteam.space/new (sign in with Google, create a Son), then stop until they
+  are back. Help: https://aiteam.space/help/connect. Support: https://aiteam.space/support.
+- More than one Son: ask which one, and use that name in every later call.
+- A Son that is still starting: say it is coming online and try `ping` again in a minute.
+
+**Step 1. The brain.** Call `ai_status`.
+- If no AI is signed in, say: "Your Son is live but has no brain yet. Connect a Claude subscription, ChatGPT, or an API key? You can add more than one account."
+- Their pick goes to `ai_signin_start`: `claude` (Claude Pro or Max), `chatgpt` (ChatGPT Plus or Pro),
+  `anthropic-key` or `openai-key` (an API key). Pass a short `label` when they name the account (for example
+  "work").
+- Give them the links exactly as returned. Claude: sign in, then paste the code Claude shows on the one-time
+  aiteam.space link. ChatGPT: open the link and type the short code; nothing to paste. API key: paste it on the
+  aiteam.space link. The link works once and expires in 15 minutes.
+- Never ask for a code, a key or a password in the chat, and never accept one here. If they paste one anyway, tell
+  them to use the link instead and to rotate that key.
+- When they say they are done, check with `ai_signin_status`. Expired or failed: start again.
+- Multiple accounts are fine: each `ai_signin_start` adds one more account (another Claude login, ChatGPT, a key).
+  Then offer a fallback order with `ai_fallback_set` (for example Claude first, ChatGPT next) and pick the main
+  model with `ai_model_set` if they want a different one.
+- Already signed in: read the first line of `ai_status` out as is and go to step 2.
+
+**Step 2. Where to reach the Son.** Ask: "Want Telegram? Google Meet?"
+- Telegram: free. They make a bot with BotFather and paste its token on the Son's page on aiteam.space
+  (https://aiteam.space/my-sons), never in this chat. Then the Son answers in Telegram, including groups with topics.
+- Google Meet: the Calls add-on. It needs a Google Workspace account with SSO (a personal Gmail does not work).
+  They add it from the Son's page. Discord voice works with no extra setup.
+- Discord: plain chat is free; thread management (two-way sync) is an add-on.
+- Skipping is fine. Everything can be added later from the Son's page.
+
+**Step 3. First task.** Suggest one small, safe task (for example "What can you do for me?" or "Post a hello in
+our team chat"), send it the way section 1 or 3 says, and report the reply. Close with: you can change the model,
+the accounts, the fallback order and the channels at any time, from this chat or from aiteam.space.
 
 ## Always
 - Sign the last line of anything you post: `— <user> from <app>`, for example `— Sam from ChatGPT`.

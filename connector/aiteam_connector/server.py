@@ -14,6 +14,7 @@ Tools exposed (titles + annotations for store review):
   usage_guide              read    who we are + how to drive the Son (usage_guide.py); also sent as the MCP server
                                    instructions
 Prompt `who_we_are` + resource `aiteam://who-we-are` (intro.py): the Sons' introduction, served on connect.
+Prompt `setup_aiteam` (setup_flow.py): guided first run ("help me set up aiteam"): brain, Telegram / Meet, first task.
   son_send                 write   message a Son and get its reply (streamed; progress notifications)
   son_list                 read    which Sons this connector can reach + health
   son_conversations        read    your conversations with a Son (via the box)
@@ -75,6 +76,7 @@ from .model_control import MODEL_TOOLS, ModelControlClient, call_model_tool, mod
 from .github_gh import GITHUB_TOOLS, LEGACY_TOOLS, GhError, GhRunner, github_tools
 from .intro import INTRO, INTRO_URI, intro_prompt, intro_prompt_result, intro_resource
 from .usage_guide import GUIDE, INSTRUCTIONS, usage_guide_tool
+from .setup_flow import SETUP_PROMPT, setup_prompt, setup_prompt_result
 from .gateway_control import CONTROL_TOOLS, control_tools, call_control_tool
 
 log = logging.getLogger("aiteam.connector")
@@ -1097,13 +1099,15 @@ def build_server(conn: Connector) -> Server:
     # Who we are (intro.py): the first thing a client meets, as an MCP prompt and an MCP resource.
     @server.list_prompts()
     async def _prompts() -> list[types.Prompt]:
-        return [intro_prompt()]
+        return [intro_prompt(), setup_prompt()]
 
     @server.get_prompt()
     async def _get_prompt(name: str, arguments: dict | None) -> types.GetPromptResult:
-        if name != intro_prompt().name:
-            raise ValueError(f"unknown prompt {name!r}")
-        return intro_prompt_result()
+        if name == intro_prompt().name:
+            return intro_prompt_result()
+        if name == SETUP_PROMPT:  # guided first run (setup_flow.py)
+            return setup_prompt_result()
+        raise ValueError(f"unknown prompt {name!r}")
 
     @server.list_resources()
     async def _resources() -> list[types.Resource]:
