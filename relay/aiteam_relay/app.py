@@ -18,6 +18,7 @@ from . import __version__
 from .auth import Jwks, verify_relay_jwt
 from .exchange import Exchanger
 from .proxy import proxy
+from .router import route
 
 log = logging.getLogger("aiteam_relay")
 logging.getLogger("httpx").setLevel(logging.WARNING)  # httpx INFO lines print full request URLs
@@ -36,6 +37,7 @@ class Settings:
     host: str = field(default_factory=lambda: _env("RELAY_HOST", "127.0.0.1"))
     port: int = field(default_factory=lambda: int(_env("RELAY_PORT", "8790")))
     son_host_suffix: str = field(default_factory=lambda: _env("RELAY_SON_HOST_SUFFIX", ".aiteam.space"))
+    multi_enabled: bool = field(default_factory=lambda: os.environ.get("RELAY_EXPERIMENTAL_MULTI") == "1")
     challenge: str = field(default_factory=lambda: os.environ.get("OPENAI_APPS_CHALLENGE", ""))
     challenge_file: str = field(default_factory=lambda: os.environ.get("OPENAI_APPS_CHALLENGE_FILE", ""))
 
@@ -109,6 +111,14 @@ def create_app(settings: Settings | None = None, *, client: httpx.AsyncClient | 
         claims = await verify_relay_jwt(token, jwks=keys, issuer=s.issuer, resource=s.resource)
         if claims is None:
             return unauthorized("invalid_token", "token is invalid, expired or not for this resource")
+        if claims.get("grant_v") == 2:
+            if not s.multi_enabled:
+                return JSONResponse({"error": "not_implemented", "error_description": "selected-Son routing disabled"},
+                                    status_code=501)
+            return await route(request, client=http, exchanger=exchanger, subject_token=token,
+                               claims=claims, expected_origin=s.public_url,
+                               on_invalid_grant=lambda d: unauthorized("invalid_token", d or "sign in again"),
+                               on_error=upstream_error)
         return await proxy(request, client=http, exchanger=exchanger, subject_token=token,
                            subject_exp=claims.get("exp"),
                            on_invalid_grant=lambda d: unauthorized("invalid_token", d or "sign in again"),
