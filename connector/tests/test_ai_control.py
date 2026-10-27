@@ -199,7 +199,13 @@ def test_box_config_loads_ai_control(tmp_path):
 # ------------------------------------------------------------------------------------------- connector tools
 def conn_for(box_url, **kw) -> Connector:
     kw.setdefault("son_id", "son-abc")
-    return Connector([SonLink("my-son", box_url, ALICE)], passthrough="none", github=False, **kw)
+    conn = Connector([SonLink("my-son", box_url, ALICE)], passthrough="none", github=False, **kw)
+    call = conn.call
+    async def owner_call(name, args, **kwargs):
+        kwargs.setdefault("caller", "owner@example.com")
+        return await call(name, args, **kwargs)
+    conn.call = owner_call
+    return conn
 
 
 async def test_ai_tools_listed_with_exact_annotations(aistack):
@@ -291,7 +297,7 @@ async def test_signin_start_without_son_id_never_shows_the_ticket(aistack, monke
 async def test_status_model_fallback_signin_status_tools(aistack):
     box_url, plugin, _ = aistack
     conn = conn_for(box_url)
-    r = await conn.call("ai_status", {})
+    r = await conn.call("ai_status", {}, caller="owner@example.com")
     first = r.content[0].text.splitlines()[0]
     assert not r.isError and first.startswith("Signed in: Claude.") and "claude-sonnet-4" in first
     assert r.structuredContent == STATUS
@@ -319,12 +325,12 @@ async def test_tool_errors_are_plain(aistack):
     assert r.isError and r.content[0].text.splitlines()[0] == (
         "Could not switch the model: Claude is not signed in on this Son.")
     box.ai.url = f"http://127.0.0.1:{free_port()}"
-    r = await conn.call("ai_status", {})
+    r = await conn.call("ai_status", {}, caller="owner@example.com")
     assert r.isError and r.content[0].text.splitlines()[0] == "AI control is not available on my-son yet."
-    r = await Connector([SonLink("my-son", box_url, "wrong")], passthrough="none", github=False).call("ai_status", {})
+    r = await Connector([SonLink("my-son", box_url, "wrong")], passthrough="none", github=False).call("ai_status", {}, caller="owner@example.com")
     assert r.isError
     r = await Connector([SonLink("my-son", "http://127.0.0.1:9", "t")], passthrough="none",
-                        github=False).call("ai_status", {})
+                        github=False).call("ai_status", {}, caller="owner@example.com")
     assert r.isError and "not reachable" in r.content[0].text
 
 
@@ -338,7 +344,7 @@ async def test_ai_tools_are_never_paywalled(aistack, tmp_path):
     assert ent.check("discord_thread_create", {}) is not None, "sanity: paid tools are walled here"
     for name in AI_TOOLS:
         assert required_addons(name, {}) == () and ent.check(name, {}) is None
-    r = await conn.call("ai_status", {})
+    r = await conn.call("ai_status", {}, caller="owner@example.com")
     assert not r.isError and not (r.structuredContent or {}).get("paywall")
     r = await conn.call("ai_signin_start", {"provider": "claude"})
     assert not r.isError and not r.structuredContent.get("paywall")

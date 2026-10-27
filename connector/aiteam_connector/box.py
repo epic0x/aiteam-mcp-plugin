@@ -73,6 +73,7 @@ class Caller:
     name: str
     token_sha256: str
     sons: list[str] = field(default_factory=lambda: ["*"])
+    control_owner: Optional[str] = None  # explicit token -> owner binding for gateway controls
 
     def may(self, son: str) -> bool:
         return "*" in self.sons or son in self.sons
@@ -103,7 +104,7 @@ class BoxConfig:
         if not re.fullmatch(r"[a-z0-9-]{3,40}", box_id):
             raise ValueError("box_id must be 3-40 chars of a-z 0-9 -")
         sons = {s["name"]: SonTarget(s["name"], s["url"], s.get("key_env", "SON_API_KEY"), s.get("model")) for s in raw["sons"]}
-        callers = [Caller(c["id"], c.get("name", c["id"]), c["token_sha256"], c.get("sons", ["*"]))
+        callers = [Caller(c["id"], c.get("name", c["id"]), c["token_sha256"], c.get("sons", ["*"]), c.get("control_owner"))
                    for c in raw.get("callers", [])]
         return cls(box_id, raw.get("box_name", box_id), sons, callers, raw.get("health"), raw.get("ai_control"))
 
@@ -393,6 +394,26 @@ class Box:
         log.info("ai control: caller=%s %s %s -> %d", c.id, method, label or path, code)  # never the bodies
         return web.json_response(data, status=code, headers={"Cache-Control": "no-store"})
 
+    async def gateway_control(self, request: web.Request) -> web.Response:
+        from .model_control import MODEL_TOOLS, ModelControlClient, call_model_tool, caller_allowed
+        from .gateway_control import CONTROL_TOOLS, call_control_tool
+        caller = self.caller_for(request)
+        cfg = self.cfg.ai_control or {}
+        local = cfg.get("son") or (next(iter(self.cfg.sons)) if len(self.cfg.sons) == 1 else None)
+        # Legacy wildcard grants / ordinary conversation tokens do not grant owner control.
+        if not local or local not in self.cfg.sons or local not in caller.sons or not caller_allowed(caller.control_owner):
+            return web.json_response({"error": "explicit local Son and owner-bound token required"}, status=403)
+        if request.headers.get("X-Aiteam-Sub", "").strip().lower() != caller.control_owner.strip().lower():
+            return web.json_response({"error": "caller identity does not match destination token binding"}, status=403)
+        body = await self._small_json(request)
+        name, args = body.get("tool"), body.get("args")
+        if set(body) != {"tool", "args"} or name not in (*MODEL_TOOLS, *CONTROL_TOOLS) or not isinstance(args, dict) or "son" in args:
+            return web.json_response({"error": "invalid control request"}, status=400)
+        client = ModelControlClient(cfg.get("control_socket"))
+        call = call_control_tool if name in CONTROL_TOOLS else call_model_tool
+        result = await call(client, name, args, caller.control_owner)
+        return web.json_response(result.model_dump(mode="json", exclude_none=True), headers={"Cache-Control": "no-store"})
+
     async def ai_status(self, request: web.Request) -> web.Response:
         return await self._ai(request, "GET", "/ai/status", False)
 
@@ -429,6 +450,7 @@ class Box:
         a.router.add_get("/v1/health/history", self.health_history)
         a.router.add_post("/v1/cleanup", self.cleanup)
         # AI control. Deliberately NO /v1/ai/credential: codes and keys only arrive through the aiteam.space page.
+        a.router.add_post("/v1/control", self.gateway_control)
         a.router.add_get("/v1/ai/status", self.ai_status)
         a.router.add_post("/v1/ai/model", self.ai_model)
         a.router.add_put("/v1/ai/fallback", self.ai_fallback)

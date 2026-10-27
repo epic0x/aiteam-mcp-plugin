@@ -43,7 +43,7 @@ Config: JSON file (``--config``) or env ``AITEAM_CONNECTOR_CONFIG``:
    "discord": {"bot_token_env": "DISCORD_BOT_TOKEN"},  # optional: Discord messages_send via webhook (discord_relay.py)
    "telegram": {"bot_token_env": "TELEGRAM_BOT_TOKEN"},  # optional: Telegram topic control (telegram_control.py, free)
    "github": {"timeout_s": 30},        # optional: gh tool settings; GitHub is on unless "github": false
-   "model_control": {"socket": "..."}} # optional: model tools socket (default <HERMES_HOME>/mcp/model-control.sock);
+   "model_control": {"socket": "..."}, # optional: model tools socket (default <HERMES_HOME>/mcp/model-control.sock);
                                        # false turns the model tools off
    "son_id": "...",                    # optional: aiteam.space Son id for the AI sign-in link (else
                                        #   $HERMES_HOME/mcp/son.json son_id, else env SON_ID)
@@ -75,6 +75,7 @@ from .model_control import MODEL_TOOLS, ModelControlClient, call_model_tool, mod
 from .github_gh import GITHUB_TOOLS, LEGACY_TOOLS, GhError, GhRunner, github_tools
 from .intro import INTRO, INTRO_URI, intro_prompt, intro_prompt_result, intro_resource
 from .usage_guide import GUIDE, INSTRUCTIONS, usage_guide_tool
+from .gateway_control import CONTROL_TOOLS, control_tools, call_control_tool
 
 log = logging.getLogger("aiteam.connector")
 SESSION_TOOLS = ("sessions_list", "session_status", "sessions_history", "sessions_search", "sessions_send")
@@ -93,7 +94,8 @@ class SonLink:
     box_token: str
     upstream_mcp_url: Optional[str] = None
     upstream_token: Optional[str] = None
-    son_id: Optional[str] = None  # aiteam.space Son id (AI sign-in link); falls back to the connector-wide son_id
+    son_id: Optional[str] = None  # remote destinations MUST declare their own secure-entry identity
+    control_owners: Optional[list[str]] = None  # explicit per-destination grants, not inferred from local JWT
 
 
 def load_discord(raw: dict):
@@ -132,7 +134,7 @@ def load_config(path: Optional[str]) -> tuple[list[SonLink], str]:
             raise SystemExit(f"son {s['name']}: env {s.get('box_token_env')} is empty")
         up_tok = os.environ.get(s["upstream_token_env"], "") if s.get("upstream_token_env") else None
         sons.append(SonLink(s["name"], s["box_url"].rstrip("/"), tok, s.get("upstream_mcp_url"), up_tok,
-                            s.get("son_id")))
+                            s.get("son_id"), s.get("control_owners")))
     mode = raw.get("passthrough", "all")
     if mode not in ("session", "none", "all"):
         raise SystemExit("passthrough must be session | none | all")
@@ -646,6 +648,12 @@ class Connector:
             raise ValueError(f"unknown son {name!r}; known: {', '.join(self.order)}")
         return self.sons[name]
 
+    def _control_allowed(self, s: SonLink, caller: Optional[str]) -> bool:
+        from .model_control import caller_allowed
+        if s.control_owners is not None:
+            return bool(s.control_owners) and caller_allowed(caller, {v.strip().lower() for v in s.control_owners})
+        return s.name == self.order[0] and caller_allowed(caller)
+
     def _h(self, s: SonLink) -> dict:
         return {"Authorization": f"Bearer {s.box_token}"}
 
@@ -667,7 +675,7 @@ class Connector:
 
     async def list_tools(self) -> list[types.Tool]:
         tools = [usage_guide_tool()] + native_tools(self.order) + health_tools(self.order) + ai_tools(self.order) \
-            + (model_tools(self.order) if self.model_control else []) + (github_tools() if self.github else []) \
+            + (model_tools(self.order) + control_tools(self.order) if self.model_control else []) + (github_tools() if self.github else []) \
             + (discord_thread_tools() if self.discord else []) + (telegram_tools() if self.telegram else [])
         if self.dtools:
             from .discord_tools import discord_tools
@@ -705,12 +713,16 @@ class Connector:
                 return text(out, not ok)
             if name == "usage_guide":
                 return text(GUIDE)
-            if name in MODEL_TOOLS:
+            if name in MODEL_TOOLS or name in CONTROL_TOOLS:
                 if not self.model_control:
                     return text(f"Tool {name} is not enabled on this connector.", True)
-                target = args.pop("son", None) or self.order[0]
-                if target != self.order[0]:
-                    return text(f"Model tools reach only this connector's own Son ({self.order[0]}).", True)
+                target = self.son(args)
+                if not self._control_allowed(target, caller):
+                    return text("Only an authorized owner of this destination may use gateway controls.", True)
+                if target.name != self.order[0]:
+                    return await self._remote_control(target, name, args, caller)
+                if name in CONTROL_TOOLS:
+                    return await call_control_tool(self.model_control, name, args, caller)
                 return await call_model_tool(self.model_control, name, args, caller)
             if name in DISCORD_THREAD_TOOLS:
                 return await self._discord_thread(name, args)
@@ -733,7 +745,10 @@ class Connector:
             if name in HEALTH_TOOLS:
                 return await self._health(name, self.son(args), args)
             if name in AI_TOOLS:
-                return await self._ai(name, self.son(args), args)
+                target = self.son(args)
+                if not self._control_allowed(target, caller):
+                    return text("Only an authorized owner of this destination may use AI controls.", True)
+                return await self._ai(name, target, args)
             s = self.son(args)
             if name == "son_send":
                 return await self._send(s, args, progress)
@@ -758,6 +773,20 @@ class Connector:
             return await up.call(name, args)
         except (ValueError, httpx.HTTPError) as e:
             return text(f"{type(e).__name__}: {e}", True)
+
+    async def _remote_control(self, target: SonLink, name: str, args: dict, caller: str) -> types.CallToolResult:
+        # Separate destination token; never send a remote session to the local UNIX socket.
+        try:
+            response = await self.http.post(target.box_url + "/v1/control", headers={**self._h(target), "X-Aiteam-Sub": caller.strip().lower()},
+                                            json={"tool": name, "args": args}, timeout=35)
+            if response.status_code != 200:
+                return text("Remote gateway control refused or unavailable; no local fallback.", True)
+            result = response.json()
+            if not isinstance(result, dict):
+                raise ValueError("invalid reply")
+            return types.CallToolResult.model_validate(result)
+        except (httpx.HTTPError, ValueError):
+            return text("Remote gateway control failed; result unverified. No local fallback.", True)
 
     async def _discord_send(self, args: dict) -> types.CallToolResult:
         """Discord targets: post via webhook so the Son sees a non-self author (wakes on <@son>), and report
@@ -890,6 +919,9 @@ class Connector:
                 return text("signin_id is required (from ai_signin_start).", True)
             req = ("GET", f"/v1/ai/signin/{sid}", None)
         elif name == "ai_signin_start":
+            # A remote login must never inherit this host's secure-entry identity.
+            if s.name != self.order[0] and not (s.son_id and SON_ID_RX.fullmatch(s.son_id)):
+                return text("Configure this destination's own son_id before starting sign-in.", True)
             prov = args.get("provider")
             if prov not in AI_PROVIDERS:
                 return text(f"provider must be one of: {', '.join(AI_PROVIDERS)}.", True)

@@ -131,7 +131,7 @@ class ModelControlClient:
         self.socket_path = Path(socket_path) if socket_path else default_socket()
         self.timeout = timeout
 
-    async def request(self, verb: str, args: dict) -> dict:
+    async def request(self, verb: str, args: dict, *, principal: Optional[str] = None) -> dict:
         if not self.socket_path.exists():
             return {"ok": False, "error": "Model control is not running on this Son yet: its Hermes gateway needs the "
                                           "aiteam-model-control hook (Son image update), then a gateway restart."}
@@ -141,7 +141,7 @@ class ModelControlClient:
             return {"ok": False, "error": f"Model control socket not answering ({type(e).__name__}). The Son's "
                                           "gateway may be restarting."}
         try:
-            writer.write(json.dumps({"verb": verb, "args": args}).encode() + b"\n")
+            writer.write(json.dumps({"verb": verb, "args": args, **({"principal": principal} if principal else {})}).encode() + b"\n")
             await writer.drain()
             line = await asyncio.wait_for(reader.readline(), self.timeout)
             return json.loads(line.decode() or "{}")
