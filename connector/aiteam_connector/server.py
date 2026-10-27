@@ -28,6 +28,11 @@ Prompt `who_we_are` + resource `aiteam://who-we-are` (intro.py): the Sons' intro
   son_model_set_all        write   set provider + model for ALL sessions of the Son
   son_model_set_session    write   set / clear provider + model for ONE session (sessionKey/sessionId)
   son_model_fallback_set   write   set the fallback order (optionally the primary too)
+  ai_status / ai_signin_status                 read    which AI the Son runs (providers signed in, model per session)
+  ai_signin_start                              write   start a Claude / ChatGPT / API-key sign-in; the code or key is
+                                                       pasted on a one-time aiteam.space link, never in the chat
+  ai_model_set / ai_fallback_set               write   switch the model (all sessions or one) / set the fallback order
+                           All five are deterministic (no model call on the Son), so they work before any sign-in.
   github_*                 read+write  the Son's own `gh` CLI login, same permissions and same output as `gh` on the
                            Son (github_gh.py). ON by default; `"github": false` turns it off.
 
@@ -38,8 +43,11 @@ Config: JSON file (``--config``) or env ``AITEAM_CONNECTOR_CONFIG``:
    "discord": {"bot_token_env": "DISCORD_BOT_TOKEN"},  # optional: Discord messages_send via webhook (discord_relay.py)
    "telegram": {"bot_token_env": "TELEGRAM_BOT_TOKEN"},  # optional: Telegram topic control (telegram_control.py, free)
    "github": {"timeout_s": 30},        # optional: gh tool settings; GitHub is on unless "github": false
-   "model_control": {"socket": "..."}} # optional: model tools socket (default <HERMES_HOME>/mcp/model-control.sock);
+   "model_control": {"socket": "..."}, # optional: model tools socket (default <HERMES_HOME>/mcp/model-control.sock);
                                        # false turns the model tools off
+   "son_id": "...",                    # optional: aiteam.space Son id for the AI sign-in link (else
+                                       #   $HERMES_HOME/mcp/son.json son_id, else env SON_ID)
+   "site_url": "https://aiteam.space"} # optional: where the one-time sign-in page lives
 Tokens live in env vars named by the config, never in the file.
 """
 from __future__ import annotations
@@ -50,7 +58,10 @@ import contextlib
 import json
 import logging
 import os
+import pathlib
+import re
 import sys
+import urllib.parse
 from dataclasses import dataclass
 from typing import Any, Optional
 
@@ -64,6 +75,7 @@ from .model_control import MODEL_TOOLS, ModelControlClient, call_model_tool, mod
 from .github_gh import GITHUB_TOOLS, LEGACY_TOOLS, GhError, GhRunner, github_tools
 from .intro import INTRO, INTRO_URI, intro_prompt, intro_prompt_result, intro_resource
 from .usage_guide import GUIDE, INSTRUCTIONS, usage_guide_tool
+from .gateway_control import CONTROL_TOOLS, control_tools, call_control_tool
 
 log = logging.getLogger("aiteam.connector")
 SESSION_TOOLS = ("sessions_list", "session_status", "sessions_history", "sessions_search", "sessions_send")
@@ -82,6 +94,8 @@ class SonLink:
     box_token: str
     upstream_mcp_url: Optional[str] = None
     upstream_token: Optional[str] = None
+    son_id: Optional[str] = None  # remote destinations MUST declare their own secure-entry identity
+    control_owners: Optional[list[str]] = None  # explicit per-destination grants, not inferred from local JWT
 
 
 def load_discord(raw: dict):
@@ -119,7 +133,8 @@ def load_config(path: Optional[str]) -> tuple[list[SonLink], str]:
         if not tok:
             raise SystemExit(f"son {s['name']}: env {s.get('box_token_env')} is empty")
         up_tok = os.environ.get(s["upstream_token_env"], "") if s.get("upstream_token_env") else None
-        sons.append(SonLink(s["name"], s["box_url"].rstrip("/"), tok, s.get("upstream_mcp_url"), up_tok))
+        sons.append(SonLink(s["name"], s["box_url"].rstrip("/"), tok, s.get("upstream_mcp_url"), up_tok,
+                            s.get("son_id"), s.get("control_owners")))
     mode = raw.get("passthrough", "all")
     if mode not in ("session", "none", "all"):
         raise SystemExit("passthrough must be session | none | all")
@@ -403,6 +418,173 @@ def telegram_tools() -> list[types.Tool]:
             annotations=rw("Edit a topic", True)),
     ]
 
+# --------------------------------------------------------------------------------------------- AI control
+AI_TOOLS = ("ai_status", "ai_signin_start", "ai_signin_status", "ai_model_set", "ai_fallback_set")
+AI_PROVIDERS = ("claude", "chatgpt", "anthropic-key", "openai-key")
+PROVIDER_NAMES = {"claude": "Claude", "chatgpt": "ChatGPT", "anthropic-key": "an Anthropic API key",
+                  "openai-key": "an OpenAI API key", "anthropic": "Anthropic", "openai-codex": "ChatGPT",
+                  "openai": "OpenAI"}
+SITE_URL = "https://aiteam.space"
+SON_ID_RX = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
+# Never relayed from the Son, at any depth: the one-time ticket is turned into secure_link first; the rest is defence.
+SECRET_KEYS = {"ticket", "secret", "code_verifier", "verifier", "access_token", "refresh_token", "api_key", "token",
+               "id_token", "password", "authorization"}
+
+
+def ai_tools(son_names: list[str]) -> list[types.Tool]:
+    """AI sign-in and model control on the Son. Free for everyone, deterministic (no model call on the Son), so they
+    work on a brand-new Son before any provider is signed in. Codes and keys are never asked for in the chat."""
+    son = _son_prop(son_names)
+    pm = {"provider": {"type": "string", "minLength": 1, "maxLength": 64,
+                       "description": "Hermes provider id, as listed by ai_status (e.g. anthropic, openai-codex)."},
+          "model": {"type": "string", "minLength": 1, "maxLength": 200, "description": "Model id, e.g. claude-sonnet-4."}}
+    ro = lambda t: types.ToolAnnotations(title=t, readOnlyHint=True, idempotentHint=True,  # noqa: E731
+                                         openWorldHint=False)
+    return [
+        types.Tool(
+            name="ai_status", title="Which AI is my Son using?",
+            description="Which AI providers your Son is signed in to (Claude, ChatGPT, API keys), the model every "
+                        "session runs on, and the fallback order. No AI needed: works on a brand-new Son. The first "
+                        "line is a short sentence you can read out as is. Call it first during onboarding.",
+            inputSchema={"type": "object", "properties": {"son": son}, "additionalProperties": False},
+            annotations=ro("Which AI is my Son using?")),
+        types.Tool(
+            name="ai_signin_start", title="Sign my Son in to Claude or ChatGPT",
+            description="Start signing your Son in to a Claude or ChatGPT subscription, or adding an Anthropic / "
+                        "OpenAI API key. Returns the provider's sign-in link and a one-time aiteam.space link (expires "
+                        "in 15 minutes) where the user pastes the Claude code or the API key. Give the user both "
+                        "links as they are. NEVER ask the user to paste a code or a key in this chat, and never "
+                        "accept one here: it goes on the aiteam.space link only. Then check with ai_signin_status.",
+            inputSchema={"type": "object", "required": ["provider"], "additionalProperties": False, "properties": {
+                "provider": {"type": "string", "enum": list(AI_PROVIDERS),
+                             "description": "claude / chatgpt = subscription sign-in; anthropic-key / openai-key = "
+                                            "an API key pasted on the aiteam.space link."},
+                "label": {"type": "string", "maxLength": 64, "description": "Optional name for this login."},
+                "son": son}},
+            annotations=types.ToolAnnotations(title="Sign my Son in to Claude or ChatGPT", readOnlyHint=False,
+                                              destructiveHint=False, idempotentHint=False, openWorldHint=True)),
+        types.Tool(
+            name="ai_signin_status", title="Check a sign-in",
+            description="State of a sign-in started with ai_signin_start: waiting, connected, failed or expired.",
+            inputSchema={"type": "object", "required": ["signin_id"], "additionalProperties": False, "properties": {
+                "signin_id": {"type": "string", "pattern": "^[A-Za-z0-9_-]{1,128}$"}, "son": son}},
+            annotations=ro("Check a sign-in")),
+        types.Tool(
+            name="ai_model_set", title="Switch my Son's model",
+            description="Switch the provider and model. scope=all (default) sets it for every session and clears "
+                        "per-session pins; scope=session pins one session (session_key or session_id from ai_status). "
+                        "The provider must be signed in first.",
+            inputSchema={"type": "object", "required": ["provider", "model"], "additionalProperties": False,
+                         "properties": {**pm,
+                                        "scope": {"type": "string", "enum": ["all", "session"], "default": "all"},
+                                        "session_key": {"type": "string", "maxLength": 256},
+                                        "session_id": {"type": "string", "maxLength": 256}, "son": son}},
+            annotations=types.ToolAnnotations(title="Switch my Son's model", readOnlyHint=False,
+                                              destructiveHint=False, idempotentHint=True, openWorldHint=False)),
+        types.Tool(
+            name="ai_fallback_set", title="Set fallback order",
+            description="Set the order of providers and models your Son falls back to when the main one fails. "
+                        "Replaces the whole list; an empty list clears it. Every provider must be signed in.",
+            inputSchema={"type": "object", "required": ["chain"], "additionalProperties": False, "properties": {
+                "chain": {"type": "array", "maxItems": 6, "items": {
+                    "type": "object", "required": ["provider", "model"], "additionalProperties": False,
+                    "properties": pm}},
+                "son": son}},
+            annotations=types.ToolAnnotations(title="Set fallback order", readOnlyHint=False,
+                                              destructiveHint=False, idempotentHint=True, openWorldHint=False)),
+    ]
+
+
+def scrub(obj: Any) -> Any:
+    """Drop secret-named keys at any depth (defence in depth: the Son should never send them)."""
+    if isinstance(obj, dict):
+        return {k: scrub(v) for k, v in obj.items() if str(k).lower() not in SECRET_KEYS}
+    if isinstance(obj, list):
+        return [scrub(v) for v in obj]
+    return obj
+
+
+def resolve_son_id(configured: Optional[str]) -> str:
+    """aiteam.space Son id: connector config, else $HERMES_HOME/mcp/son.json, else env SON_ID. Empty = unknown."""
+    if configured:
+        return str(configured)
+    home = os.environ.get("HERMES_HOME") or "/opt/data"
+    try:
+        sid = json.loads((pathlib.Path(home) / "mcp" / "son.json").read_text()).get("son_id")
+        if sid:
+            return str(sid)
+    except (OSError, ValueError, AttributeError):
+        pass
+    return os.environ.get("SON_ID", "")
+
+
+def _pname(p: Any) -> str:
+    return PROVIDER_NAMES.get(str(p), str(p))
+
+
+def ai_status_line(d: dict) -> str:
+    g = d.get("global") or {}
+    signed = [p.get("name") or _pname(p.get("provider")) for p in d.get("providers") or [] if p.get("signed_in")]
+    sessions = d.get("sessions") or []
+    pinned = sum(1 for x in sessions if x.get("override"))
+    if not signed:
+        head = "No AI is signed in yet. Start with ai_signin_start (Claude or ChatGPT)."
+    else:
+        head = f"Signed in: {', '.join(signed)}."
+    if g.get("model"):
+        head += f" Default: {_pname(g.get('provider'))} {g.get('model')}."
+        if pinned:
+            head += f" {pinned} sessions have their own model or provider pin."
+    fb = d.get("fallback") or []
+    if fb:
+        head += " Fallback: " + ", then ".join(f"{_pname(x.get('provider'))} {x.get('model')}" for x in fb) + "."
+    return head
+
+
+class AiSigninView:
+    """Builds the ai_signin_start answer. The ticket only ever appears inside the aiteam.space link."""
+
+    @staticmethod
+    def build(d: dict, son_name: str, son_id: str, site: str) -> tuple[str, dict]:
+        provider = str(d.get("provider") or "")
+        ticket = d.get("ticket")
+        out = scrub(d)
+        link = ""
+        if ticket and son_id and SON_ID_RX.fullmatch(son_id):
+            link = f"{site.rstrip('/')}/connect/ai/{son_id}?t={urllib.parse.quote(str(ticket), safe='')}"
+        out["secure_link"] = link or None
+        purl, code = d.get("provider_url"), d.get("user_code")
+        sid = d.get("signin_id")
+        no_link = (f"The secure link is not available from this connector: open your Son's page on "
+                   f"{site.rstrip('/')} to paste it there.")
+        if provider == "chatgpt":
+            lines = [f"ChatGPT sign-in started for {son_name}."]
+            lines.append(f"1. Open {purl} and enter code {code}." if purl else "1. Open the ChatGPT device sign-in page.")
+            lines.append("Done: no code to paste. Your Son connects on its own once you approve.")
+            # Device flow completes on OpenAI; the code-entry page cannot poll it. Use the
+            # sign-in status tool below rather than promising progress on that page.
+        elif provider == "claude":
+            lines = [f"Claude sign-in started for {son_name}.",
+                     f"1. Open {purl} and sign in. Claude shows a code." if purl else
+                     "1. Sign in to Claude. Claude shows a code."]
+            lines.append(f"2. Paste that code here (one-time, expires in 15 min): {link}" if link else f"2. {no_link}")
+            lines.append("Never paste the code in this chat.")
+        else:
+            what = _pname(provider)
+            lines = [f"Adding {what} to {son_name}."]
+            lines.append(f"Paste your key here (one-time, expires in 15 min): {link}" if link else no_link)
+            lines.append("Never paste the key in this chat.")
+        if sid:
+            lines.append(f"Then check it with ai_signin_status signin_id={sid}.")
+        return "\n".join(lines), out
+
+
+def _ai_result(summary: str, data: dict, is_error: bool = False) -> types.CallToolResult:
+    body = f"{summary}\n\n{json.dumps(data, ensure_ascii=False, indent=1)}" if data else summary
+    return types.CallToolResult(content=[types.TextContent(type="text", text=body)], structuredContent=data,
+                                isError=is_error)
+
+
 
 def annotate_upstream(t: types.Tool, multi_son: list[str]) -> types.Tool:
     title = t.title or t.name.replace("_", " ").capitalize()
@@ -425,15 +607,23 @@ def text(obj: Any, is_error: bool = False) -> types.CallToolResult:
     return types.CallToolResult(content=[types.TextContent(type="text", text=body)], isError=is_error)
 
 
+_AI_VERB = {"ai_status": "read the AI status", "ai_signin_start": "start the sign-in",
+            "ai_signin_status": "check the sign-in", "ai_model_set": "switch the model",
+            "ai_fallback_set": "set the fallback order"}
+
+
 class Connector:
     def __init__(self, sons: list[SonLink], passthrough: str = "all",
                  transport: Optional[httpx.AsyncBaseTransport] = None, discord=None, github: Any = True,
                  gh_runner: Optional[GhRunner] = None, telegram=None,
-                 entitlements: Optional[Entitlements] = None, model_control: Any = True):
+                 entitlements: Optional[Entitlements] = None, model_control: Any = True,
+                 son_id: Optional[str] = None, site_url: Optional[str] = None):
         self.discord = discord
         # Model / provider control (model_control.py): local socket into this Son's own Hermes gateway. On by default.
         self.model_control = None if model_control in (False, None) else ModelControlClient(
             (model_control or {}).get("socket") if isinstance(model_control, dict) else None)
+        self.son_id = son_id  # aiteam.space Son id for the one-time AI sign-in link (resolve_son_id fills the gaps)
+        self.site_url = (site_url or SITE_URL).rstrip("/")
         self.dtools = None
         if discord is not None:
             from .discord_tools import DiscordTools
@@ -458,6 +648,12 @@ class Connector:
             raise ValueError(f"unknown son {name!r}; known: {', '.join(self.order)}")
         return self.sons[name]
 
+    def _control_allowed(self, s: SonLink, caller: Optional[str]) -> bool:
+        from .model_control import caller_allowed
+        if s.control_owners is not None:
+            return bool(s.control_owners) and caller_allowed(caller, {v.strip().lower() for v in s.control_owners})
+        return s.name == self.order[0] and caller_allowed(caller)
+
     def _h(self, s: SonLink) -> dict:
         return {"Authorization": f"Bearer {s.box_token}"}
 
@@ -478,8 +674,8 @@ class Connector:
         return types.Tool(name=t.name, title=t.title, description=desc, inputSchema=schema, annotations=t.annotations)
 
     async def list_tools(self) -> list[types.Tool]:
-        tools = [usage_guide_tool()] + native_tools(self.order) + health_tools(self.order) \
-            + (model_tools(self.order) if self.model_control else []) + (github_tools() if self.github else []) \
+        tools = [usage_guide_tool()] + native_tools(self.order) + health_tools(self.order) + ai_tools(self.order) \
+            + (model_tools(self.order) + control_tools(self.order) if self.model_control else []) + (github_tools() if self.github else []) \
             + (discord_thread_tools() if self.discord else []) + (telegram_tools() if self.telegram else [])
         if self.dtools:
             from .discord_tools import discord_tools
@@ -517,12 +713,16 @@ class Connector:
                 return text(out, not ok)
             if name == "usage_guide":
                 return text(GUIDE)
-            if name in MODEL_TOOLS:
+            if name in MODEL_TOOLS or name in CONTROL_TOOLS:
                 if not self.model_control:
                     return text(f"Tool {name} is not enabled on this connector.", True)
-                target = args.pop("son", None) or self.order[0]
-                if target != self.order[0]:
-                    return text(f"Model tools reach only this connector's own Son ({self.order[0]}).", True)
+                target = self.son(args)
+                if not self._control_allowed(target, caller):
+                    return text("Only an authorized owner of this destination may use gateway controls.", True)
+                if target.name != self.order[0]:
+                    return await self._remote_control(target, name, args, caller)
+                if name in CONTROL_TOOLS:
+                    return await call_control_tool(self.model_control, name, args, caller)
                 return await call_model_tool(self.model_control, name, args, caller)
             if name in DISCORD_THREAD_TOOLS:
                 return await self._discord_thread(name, args)
@@ -544,6 +744,11 @@ class Connector:
                 return await self._son_list()
             if name in HEALTH_TOOLS:
                 return await self._health(name, self.son(args), args)
+            if name in AI_TOOLS:
+                target = self.son(args)
+                if not self._control_allowed(target, caller):
+                    return text("Only an authorized owner of this destination may use AI controls.", True)
+                return await self._ai(name, target, args)
             s = self.son(args)
             if name == "son_send":
                 return await self._send(s, args, progress)
@@ -568,6 +773,20 @@ class Connector:
             return await up.call(name, args)
         except (ValueError, httpx.HTTPError) as e:
             return text(f"{type(e).__name__}: {e}", True)
+
+    async def _remote_control(self, target: SonLink, name: str, args: dict, caller: str) -> types.CallToolResult:
+        # Separate destination token; never send a remote session to the local UNIX socket.
+        try:
+            response = await self.http.post(target.box_url + "/v1/control", headers={**self._h(target), "X-Aiteam-Sub": caller.strip().lower()},
+                                            json={"tool": name, "args": args}, timeout=35)
+            if response.status_code != 200:
+                return text("Remote gateway control refused or unavailable; no local fallback.", True)
+            result = response.json()
+            if not isinstance(result, dict):
+                raise ValueError("invalid reply")
+            return types.CallToolResult.model_validate(result)
+        except (httpx.HTTPError, ValueError):
+            return text("Remote gateway control failed; result unverified. No local fallback.", True)
 
     async def _discord_send(self, args: dict) -> types.CallToolResult:
         """Discord targets: post via webhook so the Son sees a non-self author (wakes on <@son>), and report
@@ -689,6 +908,95 @@ class Connector:
             return text(f"{s.name}'s computer did not answer in time. It may be down or very busy.", True)
         except httpx.HTTPError as e:
             return text(f"{s.name}'s computer is not reachable ({type(e).__name__}). It may be down.", True)
+
+    async def _ai(self, name: str, s: SonLink, args: dict) -> types.CallToolResult:
+        """AI control through the box (/v1/ai/*). Nothing secret comes back: the ticket becomes secure_link."""
+        if name == "ai_status":
+            req = ("GET", "/v1/ai/status", None)
+        elif name == "ai_signin_status":
+            sid = str(args.get("signin_id") or "")
+            if not re.fullmatch(r"[A-Za-z0-9_-]{1,128}", sid):
+                return text("signin_id is required (from ai_signin_start).", True)
+            req = ("GET", f"/v1/ai/signin/{sid}", None)
+        elif name == "ai_signin_start":
+            # A remote login must never inherit this host's secure-entry identity.
+            if s.name != self.order[0] and not (s.son_id and SON_ID_RX.fullmatch(s.son_id)):
+                return text("Configure this destination's own son_id before starting sign-in.", True)
+            prov = args.get("provider")
+            if prov not in AI_PROVIDERS:
+                return text(f"provider must be one of: {', '.join(AI_PROVIDERS)}.", True)
+            body = {"provider": prov}
+            if args.get("label"):
+                body["label"] = str(args["label"])[:64]
+            req = ("POST", "/v1/ai/signin/start", body)
+        elif name == "ai_model_set":
+            if not args.get("provider") or not args.get("model"):
+                return text("provider and model are required.", True)
+            scope = args.get("scope") or "all"
+            if scope not in ("all", "session"):
+                return text("scope must be all or session.", True)
+            body = {"provider": str(args["provider"]), "model": str(args["model"]), "scope": scope}
+            for k in ("session_key", "session_id"):
+                if args.get(k):
+                    body[k] = str(args[k])
+            if scope == "session" and not (body.get("session_key") or body.get("session_id")):
+                return text("scope=session needs session_key or session_id (see ai_status).", True)
+            req = ("POST", "/v1/ai/model", body)
+        else:
+            chain = args.get("chain")
+            if not isinstance(chain, list) or not all(isinstance(x, dict) and x.get("provider") and x.get("model")
+                                                      for x in chain):
+                return text("chain must be a list of {provider, model}.", True)
+            req = ("PUT", "/v1/ai/fallback",
+                   {"chain": [{"provider": str(x["provider"]), "model": str(x["model"])} for x in chain]})
+        method, path, body = req
+        try:
+            r = await self.http.request(method, f"{s.box_url}{path}", json=body, headers=self._h(s), timeout=30)
+        except httpx.TimeoutException:
+            return text(f"{s.name}'s computer did not answer in time. It may be down or very busy.", True)
+        except httpx.HTTPError as e:
+            return text(f"{s.name}'s computer is not reachable ({type(e).__name__}). It may be down.", True)
+        try:
+            d = r.json()
+        except ValueError:
+            d = {}
+        d = d if isinstance(d, dict) else {}
+        if r.status_code >= 400:
+            if r.status_code == 401 and path.startswith("/v1/ai"):
+                msg = "This connector's token for the box was refused."
+            elif r.status_code == 404 and not d.get("error"):
+                msg = f"{s.name}'s box does not have AI control yet. Update the box, then try again."
+            elif r.status_code == 503:
+                msg = f"AI control is not available on {s.name} yet."
+            else:
+                err = str(d.get("error") or f"error {r.status_code}")
+                msg = f"Could not {_AI_VERB[name]}: {err[:300]}"
+            return _ai_result(msg, {"error": msg, "status": r.status_code}, True)
+        if name == "ai_signin_start":
+            msg, out = AiSigninView.build(d, s.name, resolve_son_id(s.son_id or self.son_id), self.site_url)
+            return _ai_result(msg, out)
+        d = scrub(d)
+        if name == "ai_status":
+            return _ai_result(ai_status_line(d), d)
+        if name == "ai_signin_status":
+            st, who = d.get("state"), _pname(d.get("provider"))
+            msg = {"connected": f"Connected: {who} is signed in on {s.name}.",
+                   "waiting": f"Still waiting for the {who} sign-in to finish.",
+                   "expired": "This sign-in expired. Start a new one with ai_signin_start.",
+                   }.get(st, f"The {who} sign-in failed" + (f": {d['error']}" if d.get("error") else "."))
+            return _ai_result(msg, d)
+        if name == "ai_model_set":
+            what = f"{_pname(d.get('provider') or body['provider'])} {d.get('model') or body['model']}"
+            if (d.get("scope") or body["scope"]) == "session":
+                msg = f"That session now uses {what}."
+            else:
+                n = d.get("sessions_changed")
+                msg = f"All sessions now use {what}" + (f" ({n} changed)." if isinstance(n, int) else ".")
+            return _ai_result(msg, d)
+        fb = d.get("fallback") if isinstance(d.get("fallback"), list) else body["chain"]
+        msg = ("Fallback order: " + ", then ".join(f"{_pname(x.get('provider'))} {x.get('model')}" for x in fb) + "."
+               if fb else "Fallback order cleared.")
+        return _ai_result(msg, d)
 
     async def _son_list(self) -> types.CallToolResult:
         out = []
@@ -879,7 +1187,8 @@ def main(argv: Optional[list[str]] = None) -> None:
     sons, mode = load_config(a.config)
     raw = json.loads(open(a.config).read()) if a.config else json.loads(os.environ["AITEAM_CONNECTOR_CONFIG"])
     conn = Connector(sons, mode, discord=load_discord(raw), github=raw.get("github", True), telegram=load_telegram(raw),
-                     model_control=raw.get("model_control", True))
+                     model_control=raw.get("model_control", True),
+                     son_id=raw.get("son_id"), site_url=raw.get("site_url"))
     if a.transport == "stdio":
         asyncio.run(serve_stdio(conn))
     else:

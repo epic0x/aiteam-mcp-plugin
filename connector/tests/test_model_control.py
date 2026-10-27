@@ -96,7 +96,7 @@ class FakeRunner:
         self.session_store = FakeStore()
         self._session_model_overrides = {"agent:main:telegram:dm:9": {"model": "claude-sonnet-5-5",
                                                                       "provider": "anthropic-primary",
-                                                                      "api_key": "sk-ant-SECRET-SHOULD-NEVER-LEAK"}}
+                                                                      "api_key": "fixture-credential-not-real"}}
         self.evicted, self.running = [], set()
         self.agents = {"agent:main:discord:group:1:2": SimpleNamespace(model="claude-opus-5-5",
                                                                      provider="anthropic-primary", api_key="sk-x")}
@@ -238,14 +238,14 @@ async def test_connector_tools_over_real_socket():
 
 
 async def test_owner_gate_and_missing_socket(monkeypatch):
-    monkeypatch.setenv("AITEAM_SON_OWNERS", "jc@aiteam.space")
+    monkeypatch.setenv("AITEAM_SON_OWNERS", "owner@example.com")
     conn = Connector([SonLink("son", "http://box.invalid", "t")], "none", github=False,
                      model_control={"socket": str(_short_tmp() / "absent.sock")})
     r = await conn.call("son_model_set_all", {"provider": "p", "model": "m"}, caller="stranger@example.com")
     assert r.isError and "owner" in r.content[0].text
     r = await conn.call("son_model_status", {}, caller="stranger@example.com")
     assert r.isError and "owner" in r.content[0].text
-    r = await conn.call("son_model_status", {}, caller="JC@aiteam.space")
+    r = await conn.call("son_model_status", {}, caller="OWNER@example.com")
     assert r.isError and "not running on this Son yet" in r.content[0].text
     off = Connector([SonLink("son", "http://box.invalid", "t")], "none", github=False, model_control=False)
     assert not any(t.name in mc.MODEL_TOOLS for t in await off.list_tools())

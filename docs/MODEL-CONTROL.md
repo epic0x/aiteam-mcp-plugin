@@ -90,8 +90,9 @@ One JSON line per connection, one response line. Protocol:
 {"verb":"set_fallback","args":{"fallback":[{"provider":"...","model":"..."}]}}
 ```
 
-The connector must be on the same Son as that endpoint. Its `son` argument can select only that connector's own
-first/local Son; multi-Son routing is the relay's job. No credentials traverse the socket. A missing socket returns
+The first/local Son uses that connector's UNIX endpoint. Explicitly configured remote destinations now route
+through their own owner-bound box `/v1/control`, never through the local socket; see `GATEWAY-CONTROLS.md`.
+Automatic selected-Son routing and fleet discovery remain the separate relay's job. No credentials traverse the socket. A missing socket returns
 an actionable error, never a pretend successful switch. Disable all four tools with connector config
 `"model_control": false`; override the local socket path with `"model_control":{"socket":"..."}`.
 
