@@ -93,3 +93,15 @@ def test_guide_covers_ai_signin_and_never_asks_for_secrets_in_chat():
     assert INSTRUCTIONS.index("ai_status") < INSTRUCTIONS.index("ai_signin_start")
     assert "Never ask the user to paste a code or an API key in the chat" in INSTRUCTIONS
     assert "aiteam.space link" in INSTRUCTIONS
+
+
+def test_guide_keeps_each_project_in_its_own_workflow_and_scope():
+    # JC 2026-10-30: each project has its own workflow and scope; approvals never carry across projects.
+    assert GUIDE.index("## Projects: own workflow, own scope") < GUIDE.index("## Always")
+    g = GUIDE.lower()
+    for phrase in ("the workflow belongs to the project, not to the son", "never carry approvals across projects",
+                   "never counts for another project", "never carry context across projects",
+                   "allow no merge by a son at all", "ask the user once"):
+        assert phrase in g, phrase
+    i = INSTRUCTIONS.lower()
+    assert "never carry approvals across projects" in i and "own workflow" in i

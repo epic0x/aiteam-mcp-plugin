@@ -14,7 +14,7 @@ import mcp.types as types
 from .intro import INTRO, INTRO_SHORT
 from .setup_flow import SETUP_GUIDE, SETUP_TRIGGER
 
-GUIDE_VERSION = "11"
+GUIDE_VERSION = "12"
 
 INSTRUCTIONS = (
     INTRO_SHORT + " Introduce us this way when the user first connects (prompt who_we_are, resource "
@@ -45,7 +45,10 @@ INSTRUCTIONS = (
     "(8) AI sign-in and model: during onboarding call ai_status, then ai_signin_start (Claude or ChatGPT; they need no "
     "AI on the Son). Never ask the user to paste a code or an API key in the chat and never accept one here: always "
     "give them the one-time aiteam.space link from ai_signin_start. Switch models with ai_model_set and the fallback "
-    "order with ai_fallback_set."
+    "order with ai_fallback_set. "
+    "(9) Projects: each project has its own workflow (who builds, reviews, merges, approves; which branch) and its own "
+    "scope (repos, threads, memory). Never carry approvals across projects or context between them; if a project's "
+    "workflow is not known, ask the user once."
 )
 
 GUIDE = INTRO + """
@@ -209,6 +212,19 @@ Son before anything is signed in.
 - `ai_model_set` switches the provider and model for every session (default) or pins one session. `ai_fallback_set`
   sets the order your Son falls back to when the main model fails. The provider must be signed in first.
 """ + SETUP_GUIDE + """
+## Projects: own workflow, own scope
+Every project has its own workflow and its own scope. A project is its own repos, its own threads or channels, its
+own memory and its own rules.
+- **The workflow belongs to the project, not to the Son.** Who builds, who reviews, who merges, which branch a pull
+  request targets and who approves: each project sets these for itself.
+- **Never carry approvals across projects.** One project's "merge on green" is not permission in another project, and
+  an approval given in one project's thread never counts for another project.
+- **Never carry context across projects either.** Repos, threads, memory and decisions stay inside their project.
+- **Some projects allow no merge by a Son at all.** There the Son opens the pull request, then waits for the user's
+  approval. Opening it is the whole job.
+- **Workflow not known yet?** Ask the user once which workflow the project follows, then follow it. The answer lives in
+  the Son's own memory for that project, not in this guide.
+
 ## Always
 - Sign the last line of anything you post: `— <user> from <app>`, for example `— Sam from ChatGPT`.
 - If a tool returns an error, say so and stop. Never invent a result.

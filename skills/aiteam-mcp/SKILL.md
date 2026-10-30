@@ -1,7 +1,7 @@
 ---
 name: aiteam-mcp
 description: Use when connected to an aiteam.space Son through the aiteam MCP connector (Claude or ChatGPT). Who we are (the Sons of Davis, introduced on connect), then how to hand a task to Sons, keep one Discord thread per task, run headless work, and answer 'what are the updates?'.
-version: 1.11.0
+version: 1.12.0
 license: Apache-2.0
 ---
 <!-- Generated from connector/aiteam_connector/usage_guide.py by scripts/build_skill.py. Edit the guide, not this file. -->
@@ -225,6 +225,19 @@ in voice mode. The prompt `setup_aiteam` starts the same walk-through.
 **Step 3. First task.** Suggest one small, safe task (for example "What can you do for me?" or "Post a hello in
 our team chat"), send it the way section 1 or 3 says, and report the reply. Close with: you can change the model,
 the accounts, the fallback order and the channels at any time, from this chat or from aiteam.space.
+
+## Projects: own workflow, own scope
+Every project has its own workflow and its own scope. A project is its own repos, its own threads or channels, its
+own memory and its own rules.
+- **The workflow belongs to the project, not to the Son.** Who builds, who reviews, who merges, which branch a pull
+  request targets and who approves: each project sets these for itself.
+- **Never carry approvals across projects.** One project's "merge on green" is not permission in another project, and
+  an approval given in one project's thread never counts for another project.
+- **Never carry context across projects either.** Repos, threads, memory and decisions stay inside their project.
+- **Some projects allow no merge by a Son at all.** There the Son opens the pull request, then waits for the user's
+  approval. Opening it is the whole job.
+- **Workflow not known yet?** Ask the user once which workflow the project follows, then follow it. The answer lives in
+  the Son's own memory for that project, not in this guide.
 
 ## Always
 - Sign the last line of anything you post: `— <user> from <app>`, for example `— Sam from ChatGPT`.
