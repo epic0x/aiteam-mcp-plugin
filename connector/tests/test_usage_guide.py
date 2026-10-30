@@ -96,7 +96,6 @@ def test_guide_covers_ai_signin_and_never_asks_for_secrets_in_chat():
 
 
 def test_guide_keeps_each_project_in_its_own_workflow_and_scope():
-    # JC 2026-10-30: each project has its own workflow and scope; approvals never carry across projects.
     assert GUIDE.index("## Projects: own workflow, own scope") < GUIDE.index("## Always")
     g = GUIDE.lower()
     for phrase in ("the workflow belongs to the project, not to the son", "never carry approvals across projects",
