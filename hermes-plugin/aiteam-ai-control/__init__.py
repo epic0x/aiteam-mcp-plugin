@@ -204,9 +204,10 @@ def _api_lock(row: dict) -> dict:
 def status() -> dict:
     cfg = _load_config()
     g_provider, g_model = _model_cfg(cfg)
-    fb = cfg.get("fallback_providers") or []
+    # Show exactly what the gateway will run: it merges fallback_providers with the legacy
+    # fallback_model key, so reading only one of them lets the panel and the gateway disagree.
     fallback = [{"provider": str(x.get("provider") or ""), "model": str(x.get("model") or "")}
-                for x in fb if isinstance(x, dict)]
+                for x in _effective_chain(cfg) if isinstance(x, dict)]
     providers: Dict[str, dict] = {}
     for p in _authenticated(cfg):
         slug = str(p.get("slug") or "")
@@ -402,6 +403,40 @@ def set_model(body: dict) -> dict:
             "sessions_changed": changed}
 
 
+def _effective_chain(cfg: dict) -> List[dict]:
+    """The fallback chain the gateway runs (fallback_providers + legacy fallback_model, merged)."""
+    try:
+        from hermes_cli.fallback_config import get_fallback_chain
+        return get_fallback_chain(cfg)
+    except ImportError:  # older Hermes without the merge helper: read both keys the same way
+        out: List[dict] = []
+        for key in ("fallback_providers", "fallback_model"):
+            raw = cfg.get(key)
+            for x in (raw if isinstance(raw, list) else [raw] if isinstance(raw, dict) else []):
+                if isinstance(x, dict) and x.get("provider") and x.get("model") and x not in out:
+                    out.append(dict(x))
+        return out
+
+
+def _write_chain(clean: List[dict]) -> None:
+    """One config write: fallback_providers = clean (an explicit [] when empty) and no legacy fallback_model.
+
+    Same shape as the connector's son/model_control handler, so both paths leave the same file. An empty
+    list (not null) is what turns fallback off: the gateway merges the legacy key, so it must go too.
+    """
+    path = _config_path()
+    try:
+        from hermes_cli.config import _CONFIG_LOCK
+    except ImportError:
+        _CONFIG_LOCK = threading.RLock()
+    from utils import _roundtrip_load, _roundtrip_dump
+    with _CONFIG_LOCK:
+        yaml_rt, cfg = _roundtrip_load(path)
+        cfg["fallback_providers"] = clean
+        cfg.pop("fallback_model", None)
+        _roundtrip_dump(path, yaml_rt, cfg)
+
+
 def set_fallback(body: dict) -> dict:
     chain = body.get("chain")
     if not isinstance(chain, list) or len(chain) > 6:
@@ -409,6 +444,8 @@ def set_fallback(body: dict) -> dict:
     cfg = _load_config()
     signed = {str(p.get("slug")) for p in _authenticated(cfg)}
     signed |= {p for p in POOL_PROVIDERS if _pool_summary(p)}
+    g_provider, g_model = _model_cfg(cfg)
+    seen = {(g_provider.lower(), g_model.lower())} if g_provider and g_model else set()
     clean: List[dict] = []
     for item in chain:
         if not isinstance(item, dict):
@@ -418,9 +455,11 @@ def set_fallback(body: dict) -> dict:
             raise HttpError(400, "Each fallback entry needs provider and model.")
         if p not in signed:
             raise HttpError(409, f"{p} is not signed in on this Son.")
+        if (p.lower(), m.lower()) in seen:
+            raise HttpError(400, f"{p} / {m} is already in the chain. Pick a different subscription or model.")
+        seen.add((p.lower(), m.lower()))
         clean.append({"provider": p, "model": m})
-    from utils import atomic_roundtrip_yaml_update
-    atomic_roundtrip_yaml_update(_config_path(), "fallback_providers", clean or None)
+    _write_chain(clean)
     return {"ok": True, "fallback": clean}
 
 

@@ -61,6 +61,12 @@ persists just that session's route. All scope writes the global default, clears 
 and removes channel model/provider overrides while keeping their prompts. Other Hermes profiles are not modified.
 A separate, already-running CLI process retains its current runtime until it adopts configuration or resumes.
 
+Fallback order: `PUT /ai/fallback {"chain": [...]}` replaces the whole chain in one config write. `chain: []` turns
+fallback off: it writes `fallback_providers: []` and removes the legacy `fallback_model` key (the gateway merges
+both, so leaving it would keep a fallback). A step that repeats the main model or an earlier step is refused with
+400 and nothing is written. `ai_status` reports the merged chain the gateway will actually run. The gateway re-reads
+the chain on every turn, so no restart is needed.
+
 Sign-in tickets are random, stored only as SHA-256 hashes in the Son process, expire after 15 minutes, and cannot
 be reused after a successful submission. A gateway restart invalidates pending tickets. Claude exchange requires
 the complete `code#state` from the matching PKCE request. Provider errors are mapped to static copy, not echoed.
