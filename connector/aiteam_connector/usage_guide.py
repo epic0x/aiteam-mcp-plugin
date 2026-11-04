@@ -14,7 +14,7 @@ import mcp.types as types
 from .intro import INTRO, INTRO_SHORT
 from .setup_flow import SETUP_GUIDE, SETUP_TRIGGER
 
-GUIDE_VERSION = "12"
+GUIDE_VERSION = "13"
 
 INSTRUCTIONS = (
     INTRO_SHORT + " Introduce us this way when the user first connects (prompt who_we_are, resource "
@@ -48,7 +48,11 @@ INSTRUCTIONS = (
     "order with ai_fallback_set. "
     "(9) Projects: each project has its own workflow (who builds, reviews, merges, approves; which branch) and its own "
     "scope (repos, threads, memory). Never carry approvals across projects or context between them; if a project's "
-    "workflow is not known, ask the user once."
+    "workflow is not known, ask the user once. "
+    "(10) Team board (when listed): team_map shows the teams, nodes and links (metadata only); board_list reads a "
+    "team's tasks; board_create adds one; board_update changes one with the version you read. If it says someone "
+    "changed the task first, apply your change to the latest version it returns and call again. Titles only: no "
+    "secrets or message text."
 )
 
 GUIDE = INTRO + """
@@ -212,6 +216,19 @@ Son before anything is signed in.
 - `ai_model_set` switches the provider and model for every session (default) or pins one session. `ai_fallback_set`
   sets the order your Son falls back to when the main model fails. The provider must be signed in first.
 """ + SETUP_GUIDE + """
+## 11. Team board
+Each team has one shared task list. The tools are listed when the Son's box has the board turned on.
+- `team_map`: the teams this Son is in, their nodes (Sons, boxes, external nodes) and the links between them.
+  Metadata only: no messages, memories or task contents. Use it to find team ids and assignee ids.
+- `board_list`: every task on one team's board, with its status (todo, doing, blocked, done), assignee, link and
+  version.
+- `board_create`: add a task. A one-line title (up to 140 characters), optional status, assignee and https link.
+  Never put secrets, message text or customer data in a title.
+- `board_update`: change a task's title, status, assignee or link. Send the version you last read. If someone
+  changed it first, the result says so and carries the latest version: apply your change to that one and call
+  again with its version. Do not overwrite it blindly.
+- "This Son is not in that team" means the Son left the team or its link was removed. Tell the user; do not retry.
+
 ## Projects: own workflow, own scope
 Every project has its own workflow and its own scope. A project is its own repos, its own threads or channels, its
 own memory and its own rules.
@@ -240,7 +257,8 @@ GUIDE_TOOLS = ("messages_send", "conversations_list", "sessions_list", "sessions
                "discord_thread_member_add", "discord_thread_member_remove", "discord_thread_members",
                "telegram_topics_list", "telegram_topic_messages", "telegram_topic_send", "telegram_topic_create",
                "telegram_topic_edit", "telegram_chat_get", "ping", "health", "cleanup",
-               "ai_status", "ai_signin_start", "ai_signin_status", "ai_model_set", "ai_fallback_set", "son_list")
+               "ai_status", "ai_signin_start", "ai_signin_status", "ai_model_set", "ai_fallback_set", "son_list",
+               "team_map", "board_list", "board_create", "board_update")
 
 
 def usage_guide_tool() -> types.Tool:

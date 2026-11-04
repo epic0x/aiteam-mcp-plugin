@@ -34,6 +34,9 @@ Prompt `setup_aiteam` (setup_flow.py): guided first run ("help me set up aiteam"
                                                        pasted on a one-time aiteam.space link, never in the chat
   ai_model_set / ai_fallback_set               write   switch the model (all sessions or one) / set the fallback order
                            All five are deterministic (no model call on the Son), so they work before any sign-in.
+  team_map / board_list    read    the Son's teams (metadata only) and one team's task board (team_board.py)
+  board_create / board_update  write  add or change a task (compare-and-set on version). Listed only when env
+                           TEAM_BOARD_URL and TEAM_BOARD_TOKEN are both set. Free.
   github_*                 read+write  the Son's own `gh` CLI login, same permissions and same output as `gh` on the
                            Son (github_gh.py). ON by default; `"github": false` turns it off.
 
@@ -78,6 +81,7 @@ from .intro import INTRO, INTRO_URI, intro_prompt, intro_prompt_result, intro_re
 from .usage_guide import GUIDE, INSTRUCTIONS, usage_guide_tool
 from .setup_flow import SETUP_PROMPT, setup_prompt, setup_prompt_result
 from .gateway_control import CONTROL_TOOLS, control_tools, call_control_tool
+from .team_board import NOT_ENABLED as BOARD_NOT_ENABLED, TEAM_BOARD_TOOLS, TeamBoard, team_board_tools
 
 log = logging.getLogger("aiteam.connector")
 SESSION_TOOLS = ("sessions_list", "session_status", "sessions_history", "sessions_search", "sessions_send")
@@ -619,8 +623,10 @@ class Connector:
                  transport: Optional[httpx.AsyncBaseTransport] = None, discord=None, github: Any = True,
                  gh_runner: Optional[GhRunner] = None, telegram=None,
                  entitlements: Optional[Entitlements] = None, model_control: Any = True,
-                 son_id: Optional[str] = None, site_url: Optional[str] = None):
+                 son_id: Optional[str] = None, site_url: Optional[str] = None, team_board: Any = None):
         self.discord = discord
+        # Team board (team_board.py): None = from env TEAM_BOARD_URL + TEAM_BOARD_TOKEN (both set, else off).
+        self.team_board = None if team_board is False else (team_board or TeamBoard.from_env(transport))
         # Model / provider control (model_control.py): local socket into this Son's own Hermes gateway. On by default.
         self.model_control = None if model_control in (False, None) else ModelControlClient(
             (model_control or {}).get("socket") if isinstance(model_control, dict) else None)
@@ -678,7 +684,8 @@ class Connector:
     async def list_tools(self) -> list[types.Tool]:
         tools = [usage_guide_tool()] + native_tools(self.order) + health_tools(self.order) + ai_tools(self.order) \
             + (model_tools(self.order) + control_tools(self.order) if self.model_control else []) + (github_tools() if self.github else []) \
-            + (discord_thread_tools() if self.discord else []) + (telegram_tools() if self.telegram else [])
+            + (discord_thread_tools() if self.discord else []) + (telegram_tools() if self.telegram else []) \
+            + (team_board_tools() if self.team_board else [])
         if self.dtools:
             from .discord_tools import discord_tools
             tools += discord_tools()
@@ -742,6 +749,10 @@ class Connector:
                 return text(dump(obj), err)
             if name in TELEGRAM_TOOLS:
                 return await self._telegram(name, args)
+            if name in TEAM_BOARD_TOOLS:
+                if not self.team_board:
+                    return text(BOARD_NOT_ENABLED)
+                return await self.team_board.call(name, args)
             if name == "son_list":
                 return await self._son_list()
             if name in HEALTH_TOOLS:
