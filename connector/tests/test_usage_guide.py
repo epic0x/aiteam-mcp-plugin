@@ -108,10 +108,21 @@ def test_guide_keeps_each_project_in_its_own_workflow_and_scope():
     assert "never carry approvals across projects" in i and "own workflow" in i
 
 
+def test_guide_treats_public_repos_like_publishing_and_names_none():
+    g = GUIDE.lower()
+    assert GUIDE.index("## Public repos: treat every action like publishing a post") < GUIDE.index("## Always")
+    for phrase in ("check whether it is public", "never name the assistant or its setup", "write as the owner",
+                   "the owner approves first", "when in doubt, do not post"):
+        assert phrase in g, phrase
+    assert "Public repos: before any action on a repo, check whether it is public" in INSTRUCTIONS
+    section = GUIDE[GUIDE.index("## Public repos"):GUIDE.index("## Always")]
+    assert not re.search(r"[\w.-]+/[\w.-]+|https?:|@\w", section), "section names a repo, link or handle"
+
+
 def test_guide_covers_the_team_board():
     assert GUIDE.index("## 11. Team board") < GUIDE.index("## Projects: own workflow, own scope")
     g = GUIDE.lower()
     for phrase in ("`team_map`", "`board_list`", "`board_create`", "`board_update`", "metadata only",
                    "send the version you last read", "apply your change to that one", "do not overwrite it blindly"):
         assert phrase in g, phrase
-    assert "(10) Team board" in INSTRUCTIONS and "board_update" in INSTRUCTIONS
+    assert "(11) Team board" in INSTRUCTIONS and "board_update" in INSTRUCTIONS

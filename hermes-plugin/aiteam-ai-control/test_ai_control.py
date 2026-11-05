@@ -162,6 +162,69 @@ def test_fallback(monkeypatch, server, tmp_path):
     assert "fallback_providers" in text and "claude-sonnet-5-5" in text and "# keep me" in text
 
 
+def _real_cfg(monkeypatch, tmp_path, text):
+    """A real config file read back through the plugin's own loader path (no _load_config stub)."""
+    import yaml
+    cfg = tmp_path / "config.yaml"
+    cfg.write_text(text)
+    monkeypatch.setattr(ac, "_config_path", lambda: cfg)
+    monkeypatch.setattr(ac, "_load_config", lambda: yaml.safe_load(cfg.read_text()) or {})
+    monkeypatch.setattr(ac, "_authenticated", lambda c: [{"slug": "anthropic"}, {"slug": "openai-codex"}])
+    monkeypatch.setattr(ac, "_pool_summary", lambda p: [])
+    monkeypatch.setattr(ac, "_runner", lambda: None)
+    return cfg
+
+
+LEGACY = """model:
+  provider: anthropic
+  default: claude-opus-5-5
+# keep me
+fallback_providers:
+  - {provider: openai-codex, model: gpt-6.1-sol}
+  - {provider: anthropic, model: claude-sonnet-5-5}
+fallback_model:
+  provider: openrouter
+  model: some-legacy
+"""
+
+
+def test_empty_chain_clears_legacy_fallback(monkeypatch, server, tmp_path):
+    import yaml
+    from hermes_cli.fallback_config import get_fallback_chain
+    cfg = _real_cfg(monkeypatch, tmp_path, LEGACY)
+    assert len(call(server, "GET", "/ai/status")[1]["fallback"]) == 3  # status shows the legacy entry too
+    code, body, _ = call(server, "PUT", "/ai/fallback", {"chain": []})
+    assert code == 200 and body["fallback"] == []
+    on_disk = yaml.safe_load(cfg.read_text())
+    assert on_disk["fallback_providers"] == [] and "fallback_model" not in on_disk
+    assert get_fallback_chain(on_disk) == []
+    assert "# keep me" in cfg.read_text() and on_disk["model"]["default"] == "claude-opus-5-5"
+    assert call(server, "GET", "/ai/status")[1]["fallback"] == []
+
+
+def test_add_then_remove_round_trip(monkeypatch, server, tmp_path):
+    import yaml
+    cfg = _real_cfg(monkeypatch, tmp_path, LEGACY)
+    assert call(server, "PUT", "/ai/fallback", {"chain": []})[0] == 200
+    empty = yaml.safe_load(cfg.read_text())
+    one = {"provider": "openai-codex", "model": "gpt-6.1-sol"}
+    code, body, _ = call(server, "PUT", "/ai/fallback", {"chain": [one]})
+    assert code == 200 and call(server, "GET", "/ai/status")[1]["fallback"] == [one]
+    assert call(server, "PUT", "/ai/fallback", {"chain": []})[0] == 200
+    assert yaml.safe_load(cfg.read_text()) == empty
+    assert call(server, "GET", "/ai/status")[1]["fallback"] == []
+
+
+def test_fallback_refuses_duplicates(monkeypatch, server, tmp_path):
+    cfg = _real_cfg(monkeypatch, tmp_path, LEGACY)
+    before = cfg.read_text()
+    same_as_main = {"provider": "anthropic", "model": "claude-opus-5-5"}
+    assert call(server, "PUT", "/ai/fallback", {"chain": [same_as_main]})[0] == 400
+    twice = {"provider": "openai-codex", "model": "gpt-6.1-sol"}
+    assert call(server, "PUT", "/ai/fallback", {"chain": [twice, dict(twice)]})[0] == 400
+    assert cfg.read_text() == before  # refused = nothing written
+
+
 def test_claude_signin_and_credential(monkeypatch, server, caplog):
     caplog.set_level(logging.DEBUG)
     code, body, _ = call(server, "POST", "/ai/signin/start", {"provider": "claude"})
