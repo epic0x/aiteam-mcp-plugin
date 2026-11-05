@@ -1,7 +1,7 @@
 ---
 name: aiteam-mcp
 description: Use when connected to an aiteam.space Son through the aiteam MCP connector (Claude or ChatGPT). Who we are (the Sons of Davis, introduced on connect), then how to hand a task to Sons, keep one Discord thread per task, run headless work, and answer 'what are the updates?'.
-version: 1.12.0
+version: 1.13.0
 license: Apache-2.0
 ---
 <!-- Generated from connector/aiteam_connector/usage_guide.py by scripts/build_skill.py. Edit the guide, not this file. -->
@@ -238,6 +238,19 @@ own memory and its own rules.
   approval. Opening it is the whole job.
 - **Workflow not known yet?** Ask the user once which workflow the project follows, then follow it. The answer lives in
   the Son's own memory for that project, not in this guide.
+
+## Public repos: treat every action like publishing a post
+Before any action on a repo, check whether it is public. If it is, everything you write there is public and
+permanent.
+- **Never name the assistant or its setup.** No assistant, bot or tool names and no mention of AI in code comments,
+  commit messages, branch names, pull request titles or descriptions, issues or review notes.
+- **Write as the owner.** Every comment, question, tag or request reads as if the owner wrote it: short, human,
+  professional. No filler and no over-explaining.
+- **The owner approves first.** Send the owner a draft and wait for their OK before you push, comment, tag or ask
+  anyone, open, close or merge, or post a review on a public repo.
+- **When in doubt, do not post.** Ask the owner.
+
+Private repos keep their normal workflow.
 
 ## Always
 - Sign the last line of anything you post: `— <user> from <app>`, for example `— Sam from ChatGPT`.

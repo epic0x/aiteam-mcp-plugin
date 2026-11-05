@@ -1,5 +1,8 @@
 # Changelog
 
+## Unreleased: public repo rule
+- Usage guide (v13) and the `aiteam-mcp` skill gain "Public repos: treat every action like publishing a post": check visibility first, never name the assistant or its setup, write as the owner, and get the owner's OK on a draft before pushing, commenting, tagging, opening, closing, merging or reviewing. Server instructions get the short form as point (10).
+
 ## Unreleased: one workflow per project
 - Usage guide (v12) and the `aiteam-mcp` skill gain "Projects: own workflow, own scope": each project sets its own workflow (who builds, reviews, merges and approves, which branch) and keeps its own repos, threads and memory. Approvals and context never carry across projects; some projects allow no merge by a Son at all; an unknown workflow is asked once. Server instructions get the short form as point (9). No project names in the public plugin.
 
