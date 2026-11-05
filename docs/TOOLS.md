@@ -50,6 +50,10 @@ wakes tagged Sons), `discord_threads_list`, `discord_thread_get`, `discord_threa
 `telegram_topic_send`, `telegram_topic_create`, `telegram_topic_edit` (docs/TELEGRAM-TOPICS.md; listed when the
 connector has the Son's Telegram bot token)
 
+**Team board (4, free):** `team_map` (teams, nodes and links; metadata only), `board_list`, `board_create`,
+`board_update` (compare-and-set on `version`; a lost race returns the latest task as a normal result). Listed when
+the box sets `TEAM_BOARD_URL` and `TEAM_BOARD_TOKEN`; added after the live count above.
+
 **Messaging bridge, every connected platform (10):** `conversations_list`, `conversation_get`, `messages_read`,
 `messages_send`, `attachments_fetch`, `channels_list`, `events_poll`, `events_wait`, `permissions_list_open`,
 `permissions_respond`

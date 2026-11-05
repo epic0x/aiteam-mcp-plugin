@@ -1,7 +1,7 @@
 ---
 name: aiteam-mcp
 description: Use when connected to an aiteam.space Son through the aiteam MCP connector (Claude or ChatGPT). Who we are (the Sons of Davis, introduced on connect), then how to hand a task to Sons, keep one Discord thread per task, run headless work, and answer 'what are the updates?'.
-version: 1.13.0
+version: 1.14.0
 license: Apache-2.0
 ---
 <!-- Generated from connector/aiteam_connector/usage_guide.py by scripts/build_skill.py. Edit the guide, not this file. -->
@@ -225,6 +225,19 @@ in voice mode. The prompt `setup_aiteam` starts the same walk-through.
 **Step 3. First task.** Suggest one small, safe task (for example "What can you do for me?" or "Post a hello in
 our team chat"), send it the way section 1 or 3 says, and report the reply. Close with: you can change the model,
 the accounts, the fallback order and the channels at any time, from this chat or from aiteam.space.
+
+## 11. Team board
+Each team has one shared task list. The tools are listed when the Son's box has the board turned on.
+- `team_map`: the teams this Son is in, their nodes (Sons, boxes, external nodes) and the links between them.
+  Metadata only: no messages, memories or task contents. Use it to find team ids and assignee ids.
+- `board_list`: every task on one team's board, with its status (todo, doing, blocked, done), assignee, link and
+  version.
+- `board_create`: add a task. A one-line title (up to 140 characters), optional status, assignee and https link.
+  Never put secrets, message text or customer data in a title.
+- `board_update`: change a task's title, status, assignee or link. Send the version you last read. If someone
+  changed it first, the result says so and carries the latest version: apply your change to that one and call
+  again with its version. Do not overwrite it blindly.
+- "This Son is not in that team" means the Son left the team or its link was removed. Tell the user; do not retry.
 
 ## Projects: own workflow, own scope
 Every project has its own workflow and its own scope. A project is its own repos, its own threads or channels, its

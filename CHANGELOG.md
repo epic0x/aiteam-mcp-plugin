@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased: team board tools
+- Four free tools for the team's shared task list: `team_map` (the teams this Son is in, their nodes and links; metadata only, no messages, memories or task contents), `board_list`, `board_create` and `board_update`. Listed only when the box sets `TEAM_BOARD_URL` and `TEAM_BOARD_TOKEN`; calls go to that URL with the bearer, and the token is never logged or returned.
+- `board_update` is compare-and-set: send the version you read. When someone changed the task first, the result is a normal one carrying the latest version, so the caller re-applies its change.
+- Strict input schemas match the site's rules (one-line title up to 140 characters, https links only, known statuses and assignee kinds). Usage guide v14 adds section 11 "Team board" and point (11) in the server instructions; the `aiteam-mcp` skill is regenerated.
+
 ## Unreleased: public repo rule
 - Usage guide (v13) and the `aiteam-mcp` skill gain "Public repos: treat every action like publishing a post": check visibility first, never name the assistant or its setup, write as the owner, and get the owner's OK on a draft before pushing, commenting, tagging, opening, closing, merging or reviewing. Server instructions get the short form as point (10).
 
