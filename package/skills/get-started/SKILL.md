@@ -36,9 +36,12 @@ One step at a time: ask, wait for the answer, act, confirm, then move on. Keep e
 - Skipping is fine. Everything can be added later from https://aiteam.space/my-sons.
 
 ## 3. First task
+- Write it as a brief, not a bare line: one label (`New feature request:`, `Improvement:` or `Bug found:`) and a
+  short title, then Why, The goal, What needs to be done, What I expect back. Call `brief_templates` for the labels
+  and the team's template. The Son decides how; the brief says what and why.
 - Suggest one small, safe task, for example "What can you do for me?" or "Post a short hello to our team chat."
-- Send it with `son_send`. Keep the user's wording. Use a short conversation name (like `getting-started`) so it
-  can continue later.
+- Send it with `son_send`. Keep the user's wording inside the brief. Use a short conversation name (like
+  `getting-started`) so it can continue later.
 - A reply can take a few minutes. Tell the user the Son is working.
 
 ## 4. Check status
@@ -47,6 +50,8 @@ One step at a time: ask, wait for the answer, act, confirm, then move on. Keep e
 - To ask for a fresh update, send "What's the status?" with `son_send` in the same conversation.
 
 ## Limits
+- You are the user's coordinator: every request you pass on is labelled and briefed (see step 3), and when you need
+  the Son's input you ask it one clear question, say what you will assume meanwhile, and carry on.
 - Only Sons on the signed-in account are reachable. Never try to reach someone else's Son.
 - Do not ask the Son to make payments or move money.
 - Report what the Son actually replied. If a call fails, say so plainly.

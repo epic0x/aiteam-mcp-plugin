@@ -1,0 +1,34 @@
+id: ops
+name: Operations and IT (servers, accounts, access, costs, incidents)
+use_for: [server, servers, hosting, dns, domain, access, account, backup, cost, outage, incident, monitoring, security]
+standards:
+  - name: "ITIL change management: request for change (Atlassian)"
+    url: https://www.atlassian.com/itsm/change-management
+  - name: "Incident response and severity levels (Atlassian)"
+    url: https://www.atlassian.com/incident-management/handbook/incident-response
+  - name: "Incident postmortem templates (Atlassian)"
+    url: https://www.atlassian.com/incident-management/postmortem/templates
+fields:
+  all:
+    - key: System
+      ask: Which service, server, account or domain.
+    - key: Impact
+      ask: Who or what is affected, and how badly.
+    - key: Risk and rollback
+      ask: What could break, and how we undo it.
+    - key: Window
+      ask: When it may happen (now, tonight, after a launch) and who approves.
+    - key: Cost
+      ask: Any new spend. Zero unless the owner approved it.
+  new-feature:
+    - key: Need
+      ask: The capability needed (a new environment, an account, a backup) and do we already have it.
+  improvement:
+    - key: Today
+      ask: The current setup and its numbers (cost, speed, free memory or disk).
+  bug:
+    - key: Since when
+      ask: When it started, what changed just before, and the exact error or alert.
+    - key: Severity
+      ask: Down for everyone, degraded, or one user.
+review: Production changes follow the owner's approval rule; the expert reports what changed and how to undo it.

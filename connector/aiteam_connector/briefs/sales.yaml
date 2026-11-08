@@ -1,0 +1,28 @@
+id: sales
+name: Sales, customer success and support
+use_for: [sales, lead, customer, client, deal, quote, proposal, support, ticket, refund, onboarding call, outreach]
+standards:
+  - name: "Sales to customer success handoff (Avoma)"
+    url: https://www.avoma.com/blog/sales-customer-success-account-handoff
+  - name: "Post-sales handoff template (Asana)"
+    url: https://asana.com/templates/post-sales-handoff
+fields:
+  all:
+    - key: Customer
+      ask: Who (company, contact, plan), with a link to the record if there is one.
+    - key: Context
+      ask: What happened so far, in a few lines.
+    - key: Next step
+      ask: The one action needed and by when.
+    - key: Tone and limits
+      ask: What we may offer (discount, refund, date) and what needs the owner first.
+  new-feature:
+    - key: Customer ask
+      ask: What the customer asked for, in their words, and how much it matters to the deal.
+  improvement:
+    - key: Today
+      ask: The current process, script or offer, and what to change.
+  bug:
+    - key: Customer impact
+      ask: What the customer hit, their exact words or ticket, and whether they are waiting on us.
+review: Nothing goes to a customer, and no money moves, without the owner's OK on the draft.

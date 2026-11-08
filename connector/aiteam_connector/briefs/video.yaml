@@ -1,0 +1,36 @@
+id: video
+name: Video and motion (ads, reels, explainers, demos)
+use_for: [video, reel, short, ad cut, explainer, demo, animation, voiceover, edit, trailer]
+standards:
+  - name: "Video production brief (Storyflow)"
+    url: https://storyflow.so/video-production-brief
+  - name: "How to write a video production brief (LV Productions)"
+    url: https://www.lv-prod.com/blog/how-to-write-a-video-production-brief/
+  - name: "Product video brief: lengths x ratios (Lemonlight)"
+    url: https://www.lemonlight.com/blog/product-video-brief/
+fields:
+  all:
+    - key: Purpose and audience
+      ask: What the video must make the viewer do or feel, and who the viewer is.
+    - key: Length and format
+      ask: Duration and aspect ratio per platform (9:16 reels, 4:5 feed, 16:9 YouTube).
+    - key: Message and script
+      ask: The hook, the key line and the call to action. Script or voiceover if the owner gave one.
+    - key: Tone and references
+      ask: The feel, with links to videos the owner likes.
+    - key: Assets
+      ask: Footage, logos, product screens, music rules (licensed or royalty-free only).
+    - key: Deliverables
+      ask: Every export needed (versions, captions on or off, languages) and where they go (calendar, folder).
+    - key: Review rounds
+      ask: How many rounds and who signs off.
+  new-feature:
+    - key: Deadline
+      ask: When it is needed, and for which post or launch.
+  improvement:
+    - key: Version
+      ask: Which version and file, and the exact changes, with timecodes (for example 0:08 cut the shot faster).
+  bug:
+    - key: Timecode and issue
+      ask: Each problem with its timecode (glitch, typo in a caption, audio out of sync, wrong logo).
+review: Every version goes back on the content calendar for the reviewer; comments there drive the next version.

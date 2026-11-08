@@ -1,0 +1,66 @@
+# How every request from the coordinator is written. Edit this file to change the labels or the four parts for
+# every team. Team files (engineering.yaml, marketing.yaml, ...) add their own fields on top.
+#
+# Override without touching code: put a file with the same name in your briefs folder (env AITEAM_BRIEFS_DIR,
+# or <HERMES_HOME>/briefs). A file there replaces the bundled one; a new team file adds a team.
+version: 1
+
+# Every request starts with one of these labels, then a short title. The first line becomes the thread title.
+labels:
+  - id: new-feature
+    title: New feature request
+    use_when: Something that does not exist yet.
+  - id: improvement
+    title: Improvement
+    use_when: Something that exists and works, but should work better, faster, clearer or cheaper.
+  - id: bug
+    title: Bug found
+    use_when: Something that exists and is broken, or does not do what it says.
+
+# The four parts every brief carries, in this order. Keep each one short: one to three lines.
+parts:
+  - key: why
+    heading: Why
+    ask: Why does the owner want this? The problem, who it hurts, what triggered it. Use the owner's own words.
+  - key: goal
+    heading: The goal
+    ask: The outcome in one sentence, measurable when possible (a number, a date, a user able to do X).
+  - key: what
+    heading: What needs to be done
+    ask: The scope as a short list of what, never how. Say what is out of scope if it was discussed.
+  - key: expect
+    heading: What I expect back
+    ask: The deliverable (PR, link, file, video, report), how we know it is done, and by when if the owner said.
+
+# Experts decide how. The brief never picks the stack, tool, library, design system or method unless the owner
+# said so explicitly; then it is written as a constraint, with the owner's reason.
+experts_decide: true
+
+# Asking an expert. The coordinator asks the right expert by name, in the same thread, and keeps going.
+ask_expert:
+  format: "<expert>, <one clear question>? <what you will assume meanwhile>."
+  example: "Ops, what do you think about our servers: do we already have this? Until you answer, I'll assume we don't."
+  rules:
+    - One question per expert, with the context they need to answer it in one reply.
+    - Say the assumption you will work on until they answer, then carry on. Never stop the brief to wait.
+    - Say whether it blocks the work. Most questions do not; mark only the ones where work truly cannot start.
+    - Give a by-when when timing matters. No answer by then means the assumption stands.
+    - Ask only what the owner cannot answer and the expert can.
+  standards:
+    - name: "Lazy consensus: state the default, silence is consent (Apache)"
+      url: https://community.apache.org/committers/lazyConsensus.html
+    - name: "Async communication: say what you expect and by when (GitLab)"
+      url: https://handbook.gitlab.com/handbook/communication/
+
+# Before a conversation ends, everything agreed becomes a task. Nothing stays only in the chat.
+recap:
+  rule: >-
+    At the end of a conversation (or when the owner says "that's it"), list every decision and request from it.
+    Each one becomes a labelled brief, a board task, or a follow-up in its existing thread. Tell the owner what was
+    sent where, in one short list.
+  never:
+    - Never drop a request because it was said in passing.
+    - Never merge two unrelated requests into one brief. One brief per outcome.
+
+# Signature line at the end of every brief.
+signature: "— <owner> from <app>"

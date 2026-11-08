@@ -212,7 +212,7 @@ async def test_github_on_by_default_full_surface():
             return [types.Tool(name=n, inputSchema={"type": "object"}) for n in names]
     conn.upstreams["my-son"] = Up()
     names = [t.name for t in await conn.list_tools()]
-    assert len(names) == 64 == len(set(names))
+    assert len(names) == 65 == len(set(names))   # + brief_templates
     assert set(GITHUB_TOOLS) <= set(names)
 
 

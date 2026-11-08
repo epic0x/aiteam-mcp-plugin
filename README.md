@@ -142,6 +142,8 @@ Details: [docs/GATEWAY-CONTROLS.md](docs/GATEWAY-CONTROLS.md).
 - **Team board:** `team_map` (teams, nodes and links, metadata only), `board_list`, `board_create`, `board_update`
   (one shared task list per team; updates send the version they read). Free; on when the box sets
   `TEAM_BOARD_URL` and `TEAM_BOARD_TOKEN`. Docs: [docs/TOOLS.md](docs/TOOLS.md).
+- **Brief templates:** `brief_templates`: how to write a request for each team (labels, why / goal / what / expect
+  back), from editable YAML. Free. Docs: [docs/BRIEFS.md](docs/BRIEFS.md).
 - **Status questions** ("what are the updates?"): the assistant checks live sessions, threads and GitHub first, then
   answers Done / In progress / Waiting / Next. Docs: [docs/OPERATING-RULES.md](docs/OPERATING-RULES.md).
 

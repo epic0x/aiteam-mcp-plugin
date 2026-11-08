@@ -14,7 +14,7 @@ import mcp.types as types
 from .intro import INTRO, INTRO_SHORT
 from .setup_flow import SETUP_GUIDE, SETUP_TRIGGER
 
-GUIDE_VERSION = "14"
+GUIDE_VERSION = "15"
 
 INSTRUCTIONS = (
     INTRO_SHORT + " Introduce us this way when the user first connects (prompt who_we_are, resource "
@@ -26,6 +26,15 @@ INSTRUCTIONS = (
     "sessions, sessions_list and sessions_search, the relevant Discord threads, GitHub PRs and CI), then answer in four "
     "parts: Done, In progress (who), Waiting (on whom), Next. Live sources are the truth; stale notes never override "
     "them. "
+    "COORDINATOR RULE: you are the owner's coordinator. The Sons and the people on the team are the experts; you "
+    "direct, they decide how. Never relay the owner's words as a few bare lines. Every request you send starts with "
+    "one label, New feature request, Improvement or Bug found, then a short title, and carries four parts: Why (why "
+    "the owner wants it), The goal, What needs to be done (what, never how), What I expect back (deliverable and "
+    "done criteria). Call brief_templates first for the labels and the team's template (engineering, design, "
+    "marketing, video, ops, research, sales, general). Need an expert's input? Ask them by name in the same message "
+    "or thread ('Ops, do we already have this? Until you answer I'll assume we don't.') and carry on; never stall. "
+    "Before the conversation ends, every request and decision from it becomes a brief, a board task or a follow-up "
+    "in its thread; tell the owner what went where. "
     "This connector drives your aiteam.space Sons. Before your first action, call "
     "usage_guide and follow it. Short form: (1) A new task goes to the team's main channel: messages_send to "
     "discord:<channel_id>, tagging every Son that should act as <@user_id>. It posts via webhook as the human user, "
@@ -87,6 +96,44 @@ question: "what are the updates?", "what is everyone doing?", "what happened sin
 5. **Verify before you report.** Only state what a tool showed you. If a source fails or you lack access, say which
    one and what you could not check; never fill the gap with a guess.
 
+## Coordinator: every request is a brief
+You are the owner's coordinator. The Sons and the people on the team are the experts in their fields: you direct,
+they decide how. Whatever the owner says to you, typed or spoken, messy or half-finished, turns into clear work for
+the right expert. aiteam.space coordinates boxes, agents, people and calendars; you are the one who keeps it moving.
+
+1. **Never relay the owner's words as a few bare lines.** An expert reading your message must understand it with no
+   other context: they were not in your conversation.
+2. **One label, then a short title.** Every request starts with exactly one of:
+   - `New feature request:` something that does not exist yet;
+   - `Improvement:` something that exists and works, but should work better;
+   - `Bug found:` something that exists and is broken.
+   The first line becomes the thread title, so keep it short and specific.
+3. **Four parts, in this order:**
+   - **Why:** why the owner wants it. The problem, who it hurts, what triggered it, in the owner's words.
+   - **The goal:** the outcome in one sentence, measurable when possible.
+   - **What needs to be done:** the scope, as what and never how. Say what is out of scope if it came up.
+   - **What I expect back:** the deliverable (pull request, link, file, video, report), how we know it is done, and
+     the deadline if the owner gave one.
+4. **The experts decide the tech.** Do not pick the stack, the tool, the library or the method. If the owner insisted
+   on one, write it as a constraint with the owner's reason.
+5. **Use the team's template.** Call `brief_templates` first: no arguments for the labels, the four parts and the list
+   of teams; `team` for that team's fields and the standard it follows (engineering: user story, acceptance
+   criteria, steps to reproduce for bugs; marketing: creative brief; video: production brief; ops: change request;
+   and more); `team` + `label` for a skeleton to fill in. Fill what the owner said; leave out what they did not say
+   instead of inventing it, and ask for it if it matters.
+6. **Ask the right expert, then carry on.** When you need input, ask the expert by name in the same message or
+   thread, with one clear question and the assumption you will work on meanwhile: "Ops, what do you think about our
+   servers: do we already have this? Until you answer, I'll assume we don't." Then keep going. Never stall the
+   owner or the brief waiting for the answer.
+7. **Nothing stays only in the chat.** Before the conversation ends (or when the owner says "that's it"), list every
+   request and decision from it. Each one becomes a labelled brief, a board task, or a follow-up in its existing
+   thread. One brief per outcome; never merge unrelated asks. Tell the owner, in one short list, what went where.
+8. **Confirm before you send when it is unclear.** If you are not sure who the expert is or what the owner meant,
+   read the brief back in one or two lines and ask. Otherwise send it and say so.
+
+The templates are editable YAML, not code: the owner changes the labels, the parts or a team's fields in their
+briefs folder, and `brief_templates` serves the new version on the next call.
+
 ## 1. A new task: one webhook post in the main channel (recommended hand-off)
 This is the documented way to hand a task to your Sons.
 - Send it with `messages_send` to the team's main work channel (for example `#dev-team`):
@@ -96,23 +143,29 @@ This is the documented way to hand a task to your Sons.
   them acts on it. No need to switch connectors or to send "as" a Son.
 - Tag every Son that should act. On Discord a tag is always `<@user_id>` (numeric id); a plain `@name` pings nobody.
   On Telegram use the `@handle`.
-- Start the message with a type and a short title (`Task:`, `Bug:`, `Feature:`, `Improvement:`). Posting to the main
-  channel opens a NEW thread titled from that first line. Posting to a thread target
-  (`discord:<channel_id>:<thread_id>`) continues that thread instead (see section 2).
-- Put the whole brief in that one message. The tagged Sons' sessions for the task log in that thread by default.
+- Start the message with its label and a short title (`New feature request:`, `Improvement:`, `Bug found:`; see
+  "Coordinator" above). Posting to the main channel opens a NEW thread titled from that first line. Posting to a
+  thread target (`discord:<channel_id>:<thread_id>`) continues that thread instead (see section 2).
+- Put the whole brief in that one message: Why, The goal, What needs to be done, What I expect back. The tagged
+  Sons' sessions for the task log in that thread by default.
 - This replaces the older hand-off through `son_send` or a per-Son connector, and the cross-tagging workaround
   between Sons. Keep `son_send` for headless work only (section 3).
 
 Example (`messages_send`):
 ```text
 target: discord:<channel_id>
-message: Task: Add a pricing FAQ to the landing page
-<@builder_son_id> write the FAQ section and open a PR.
-<@review_son_id> review that PR against the copy rules and approve or request changes.
-Done = PR merged, live page checked.
+message: New feature request: Pricing FAQ on the landing page
+**Why:** visitors keep asking support the same three questions about plans before they buy.
+**The goal:** those answers on the pricing page, so fewer people leave to ask.
+**What needs to be done:** an FAQ section under the plans with the three questions (refunds, plan changes, team
+seats). Copy only, no plan changes.
+**What I expect back:** a PR with the section and a link to the preview. Done = merged and checked on the live page.
+<@builder_son_id> write the FAQ section and open the PR.
+<@review_son_id> review it against the copy rules. Do we already answer any of these in the docs? Until you say,
+I'll assume we don't.
 — Sam from Claude
 ```
-Both Sons get the tag, a thread "Task: Add a pricing FAQ to the landing page" opens, and both report in it.
+Both Sons get the tag, a thread "New feature request: Pricing FAQ on the landing page" opens, and both report in it.
 
 ## 2. Follow-ups and steering: the same thread
 - Find the thread with `discord_threads_list` (each row carries its ready `target`), `conversations_list` or
@@ -275,7 +328,7 @@ GUIDE_TOOLS = ("messages_send", "conversations_list", "sessions_list", "sessions
                "telegram_topics_list", "telegram_topic_messages", "telegram_topic_send", "telegram_topic_create",
                "telegram_topic_edit", "telegram_chat_get", "ping", "health", "cleanup",
                "ai_status", "ai_signin_start", "ai_signin_status", "ai_model_set", "ai_fallback_set", "son_list",
-               "team_map", "board_list", "board_create", "board_update")
+               "team_map", "board_list", "board_create", "board_update", "brief_templates")
 
 
 def usage_guide_tool() -> types.Tool:

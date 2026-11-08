@@ -105,7 +105,7 @@ async def test_mcp_connector_end_to_end(stack):
     async with create_connected_server_and_client_session(build_server(conn)) as client:
         client: ClientSession
         tools = {t.name: t for t in (await client.list_tools()).tools}
-        native = {"usage_guide", "son_send", "son_list", "son_conversations", "son_conversation_history",
+        native = {"usage_guide", "brief_templates", "son_send", "son_list", "son_conversations", "son_conversation_history",
                   "ping", "health", "cleanup", "son_model_status", "son_model_set_all",
                   "son_model_set_session", "son_model_fallback_set", "ai_status", "ai_signin_start", "ai_signin_status",
                   "ai_model_set", "ai_fallback_set", "son_session_stop", "son_session_interrupt",

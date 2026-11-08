@@ -1,0 +1,30 @@
+id: design
+name: Design and UX (screens, flows, brand, assets)
+use_for: [design, ux, ui, screen, flow, onboarding, logo, brand, mockup, prototype, layout]
+standards:
+  - name: "Design brief (UX Atlas)"
+    url: https://www.uxatlas.in/templates/design-brief
+  - name: "How to write a good design brief (UXPin)"
+    url: https://www.uxpin.com/studio/blog/design-brief/
+fields:
+  all:
+    - key: Who uses it
+      ask: The audience and the moment they meet this (first visit, checkout, on a phone).
+    - key: Constraints
+      ask: Brand, accessibility, platforms and anything the owner said must stay.
+    - key: References
+      ask: Links or screenshots the owner liked or disliked, and why.
+    - key: Success
+      ask: How we will know it works (a test with users, a metric, the owner's sign-off).
+  new-feature:
+    - key: User task
+      ask: What the user is trying to get done, in their words.
+  improvement:
+    - key: Today
+      ask: The current screen or flow, and what is wrong with it.
+  bug:
+    - key: Where and what
+      ask: The screen, the device and browser, a screenshot, and what looks or behaves wrong.
+    - key: Expected
+      ask: What it should look like or do.
+review: The expert sends options or a first pass early; the owner picks before the final assets.
