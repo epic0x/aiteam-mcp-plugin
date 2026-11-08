@@ -46,6 +46,20 @@ ask_expert:
     - Say whether it blocks the work. Most questions do not; mark only the ones where work truly cannot start.
     - Give a by-when when timing matters. No answer by then means the assumption stands.
     - Ask only what the owner cannot answer and the expert can.
+  # When a question is written out on its own (in a skeleton, or when several are open), it carries these lines.
+  block:
+    - key: Question
+      ask: One clear question.
+    - key: Who answers
+      ask: The expert, by name or tag.
+    - key: Who decides
+      ask: Who makes the call if the answer leads to a choice (usually the owner).
+    - key: Answer by
+      ask: The date or time, or "no rush".
+    - key: If no answer
+      ask: The assumption that stands until they answer.
+    - key: Blocking
+      ask: Yes (work cannot start without it) or no (work goes ahead on the assumption).
   standards:
     - name: "Lazy consensus: state the default, silence is consent (Apache)"
       url: https://community.apache.org/committers/lazyConsensus.html

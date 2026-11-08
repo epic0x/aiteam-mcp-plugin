@@ -58,6 +58,8 @@ def check_core(d: Any) -> list[str]:
         err.append("parts: a list of {key, heading, ask}")
     if not isinstance(d.get("ask_expert"), dict) or not _str(d["ask_expert"].get("format")):
         err.append("ask_expert.format: required")
+    elif "block" in d["ask_expert"] and not _fields_ok(d["ask_expert"]["block"]):
+        err.append("ask_expert.block: a list of {key, ask}")
     return err
 
 
@@ -77,6 +79,11 @@ def check_team(d: Any, stem: str) -> list[str]:
     f = d.get("fields")
     if not isinstance(f, dict) or not all(k in ("all",) + LABEL_IDS for k in f) or not all(_fields_ok(v) for v in f.values()):
         err.append(f"fields: keys all / {' / '.join(LABEL_IDS)}, each a list of {{key, ask}}")
+    if "mark_each" in d and (not isinstance(d["mark_each"], list) or not d["mark_each"]
+                             or not all(_str(x) for x in d["mark_each"])):
+        err.append("mark_each: a list of words, e.g. [Confirmed, Unclear, Not discussed]")
+    if "send_back" in d and not _str(d["send_back"]):
+        err.append("send_back: a sentence")
     return err
 
 
@@ -129,8 +136,15 @@ def skeleton(core: dict, team: dict, label: str) -> str:
     for part in core["parts"]:
         lines += [f"**{part['heading']}:** <{part['ask']}>"]
     fields = (team.get("fields") or {}).get("all", []) + (team.get("fields") or {}).get(label, [])
+    marks = team.get("mark_each") or []
+    mark = f" [{' / '.join(marks)}]" if marks else ""
     if fields:
-        lines += ["", "**Details:**"] + [f"- {f['key']}: <{f['ask']}>" for f in fields]
+        lines += ["", "**Details:**"] + [f"- {f['key']}: <{f['ask']}>{mark}" for f in fields]
+    if team.get("send_back"):
+        lines += ["", f"_{team['send_back'].strip()}_"]
+    block = (core.get("ask_expert") or {}).get("block") or []
+    if block:
+        lines += ["", "**Open question** (one per expert; skip if none):"] + [f"- {b['key']}: <{b['ask']}>" for b in block]
     lines += ["", "<@expert_id> <what you need from them>", core.get("signature") or "— <owner> from <app>"]
     return "\n".join(lines)
 

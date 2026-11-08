@@ -26,3 +26,8 @@ fields:
     - key: Customer impact
       ask: What the customer hit, their exact words or ticket, and whether they are waiting on us.
 review: Nothing goes to a customer, and no money moves, without the owner's OK on the draft.
+# Each detail line is marked with one of these, so the next person sees what is known and what is not.
+mark_each: [Confirmed, Unclear, Not discussed]
+send_back: >-
+  The person taking over can send the handoff back if a gap blocks them (for example the next step or the limits
+  are Unclear or Not discussed). Say what is missing; the owner fills it in before work starts.

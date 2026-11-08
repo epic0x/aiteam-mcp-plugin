@@ -1,7 +1,7 @@
 ---
 name: aiteam-mcp
 description: Use when connected to an aiteam.space Son through the aiteam MCP connector (Claude or ChatGPT). Who we are (the Sons of Davis, introduced on connect), then how to hand a task to Sons, keep one Discord thread per task, run headless work, and answer 'what are the updates?'.
-version: 1.15.0
+version: 1.16.0
 license: Apache-2.0
 ---
 <!-- Generated from connector/aiteam_connector/usage_guide.py by scripts/build_skill.py. Edit the guide, not this file. -->
@@ -82,7 +82,9 @@ the right expert. aiteam.space coordinates boxes, agents, people and calendars; 
 6. **Ask the right expert, then carry on.** When you need input, ask the expert by name in the same message or
    thread, with one clear question and the assumption you will work on meanwhile: "Ops, what do you think about our
    servers: do we already have this? Until you answer, I'll assume we don't." Then keep going. Never stall the
-   owner or the brief waiting for the answer.
+   owner or the brief waiting for the answer. Say whether it blocks the work (most questions do not) and give an
+   answer-by when timing matters; no answer by then means your assumption stands. With several open questions, write
+   each one out: question, who answers, who decides, answer by, if no answer, blocking (see `brief_templates`).
 7. **Nothing stays only in the chat.** Before the conversation ends (or when the owner says "that's it"), list every
    request and decision from it. Each one becomes a labelled brief, a board task, or a follow-up in its existing
    thread. One brief per outcome; never merge unrelated asks. Tell the owner, in one short list, what went where.
