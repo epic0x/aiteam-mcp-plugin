@@ -54,6 +54,11 @@ connector has the Son's Telegram bot token)
 `board_update` (compare-and-set on `version`; a lost race returns the latest task as a normal result). Listed when
 the box sets `TEAM_BOARD_URL` and `TEAM_BOARD_TOKEN`; added after the live count above.
 
+**Brief templates (1, free, read-only):** `brief_templates` returns the request labels (New feature request,
+Improvement, Bug found), the four parts every brief carries, how to ask an expert, and one template per team type,
+from `connector/aiteam_connector/briefs/*.yaml`. Override or add templates in `AITEAM_BRIEFS_DIR` (else
+`<HERMES_HOME>/briefs`); see [BRIEFS.md](BRIEFS.md).
+
 **Messaging bridge, every connected platform (10):** `conversations_list`, `conversation_get`, `messages_read`,
 `messages_send`, `attachments_fetch`, `channels_list`, `events_poll`, `events_wait`, `permissions_list_open`,
 `permissions_respond`

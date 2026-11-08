@@ -1,0 +1,28 @@
+id: general
+name: General (anything that fits no other team)
+use_for: [other, admin, docs, pdf, planning, schedule, travel, finance, legal, hiring]
+standards:
+  - name: "SMART goals (Doran, 1981)"
+    url: https://en.wikipedia.org/wiki/SMART_criteria
+  - name: "RACI chart (Asana)"
+    url: https://asana.com/resources/raci-chart
+  - name: "DACI decision framework (Atlassian)"
+    url: https://www.atlassian.com/team-playbook/plays/daci
+  - name: "5W1H method (t2informatik)"
+    url: https://t2informatik.de/en/smartpedia/5w1h-method
+fields:
+  all:
+    - key: Owner
+      ask: Who does it (responsible), who signs off (accountable), who to ask (consulted), who to tell (informed).
+    - key: Deadline
+      ask: When it is needed, if the owner said.
+    - key: Done when
+      ask: What finished looks like.
+  new-feature: []
+  improvement:
+    - key: Today
+      ask: How it is done now.
+  bug:
+    - key: What went wrong
+      ask: What happened, when, and what it should have been.
+review: The expert reports back in the same thread with the result or the blocker.

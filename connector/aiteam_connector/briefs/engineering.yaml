@@ -1,0 +1,50 @@
+id: engineering
+name: Engineering (web, apps, backend, infrastructure code)
+use_for: [code, app, website, api, backend, frontend, mobile, database, integration, release, deploy]
+standards:
+  - name: "User stories with acceptance criteria (Atlassian)"
+    url: https://www.atlassian.com/agile/project-management/user-stories
+  - name: "Acceptance criteria (Atlassian)"
+    url: https://www.atlassian.com/work-management/project-management/acceptance-criteria
+  - name: "INVEST in good stories (Bill Wake)"
+    url: https://xp123.com/invest-in-good-stories-and-smart-tasks/
+  - name: "Gherkin Given / When / Then (Cucumber)"
+    url: https://cucumber.io/docs/gherkin/reference/
+  - name: "Definition of Done (Scrum Guide)"
+    url: https://scrumguides.org/scrum-guide.html
+  - name: "Bug writing guidelines (Mozilla)"
+    url: https://bugzilla.mozilla.org/page.cgi?id=bug-writing.html
+  - name: "Write the pitch: problem, appetite, no-gos (Shape Up)"
+    url: https://basecamp.com/shapeup/1.5-chapter-06
+fields:
+  all:
+    - key: Where
+      ask: Product, page or repo, and which environment (live, staging) if known.
+    - key: Done when
+      ask: Two to five checks anyone can verify, written as Given / When / Then when it helps.
+  new-feature:
+    - key: User story
+      ask: As a <who>, I want <what>, so that <why>.
+    - key: Out of scope
+      ask: What this request does not cover, if the owner said.
+  improvement:
+    - key: Today
+      ask: How it works now, with a link or screenshot if there is one.
+    - key: Better means
+      ask: What changes for the user, with a number when there is one (faster, fewer steps, clearer).
+  bug:
+    - key: Steps to reproduce
+      ask: Numbered steps from a clean start.
+    - key: Expected
+      ask: What should happen.
+    - key: Actual
+      ask: What happens instead, with the exact error text. Facts only; keep guesses apart.
+    - key: How often
+      ask: Always, sometimes or once.
+    - key: Environment
+      ask: Device, operating system, browser or app version, and which account, if known.
+    - key: Severity
+      ask: Blocker (nobody can use it), major (a main flow is broken), minor (a workaround exists) or cosmetic.
+    - key: Since when / who sees it
+      ask: When it started, and whether it hits everyone or only some users, devices or browsers.
+review: The expert opens a pull request with tests; the owner's project workflow decides who reviews and merges.

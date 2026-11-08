@@ -1,0 +1,32 @@
+id: research
+name: Research and analysis (market, competitors, users, data)
+use_for: [research, analysis, competitor, market, survey, data, report, numbers, pricing study, compare]
+standards:
+  - name: "Research brief: start from the decision (Vife)"
+    url: https://vife.ai/blog/how-to-write-research-brief-with-sources
+  - name: "Market research brief template (GoTranscript)"
+    url: https://gotranscript.com/en/blog/market-research-brief-template-copy-paste-stakeholders
+fields:
+  all:
+    - key: Question
+      ask: The exact question to answer.
+    - key: Decision
+      ask: What the owner will decide with the answer, and by when.
+    - key: If we do nothing
+      ask: What happens if we skip this research.
+    - key: Scope
+      ask: What to include and leave out (markets, competitors, dates).
+    - key: Sources
+      ask: Sources to use or avoid. Every claim cited.
+    - key: Format
+      ask: One-page summary, table, PDF, or a short answer in the thread.
+  new-feature:
+    - key: Deadline
+      ask: When the answer is needed.
+  improvement:
+    - key: Earlier work
+      ask: The earlier report to update, and what changed since.
+  bug:
+    - key: What is wrong
+      ask: The wrong figure or claim, where it appears, and the correct source if known.
+review: Answer first, then the evidence. Say what could not be checked.

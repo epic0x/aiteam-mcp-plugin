@@ -13,6 +13,8 @@ Three things folded into one connector:
 Tools exposed (titles + annotations for store review):
   usage_guide              read    who we are + how to drive the Son (usage_guide.py); also sent as the MCP server
                                    instructions
+  brief_templates          read    how to write a request to the team: labels, the four parts, how to ask an expert,
+                                   one template per team type, from editable YAML (brief_templates.py, briefs/*.yaml)
 Prompt `who_we_are` + resource `aiteam://who-we-are` (intro.py): the Sons' introduction, served on connect.
 Prompt `setup_aiteam` (setup_flow.py): guided first run ("help me set up aiteam"): brain, Telegram / Meet, first task.
   son_send                 write   message a Son and get its reply (streamed; progress notifications)
@@ -82,6 +84,7 @@ from .usage_guide import GUIDE, INSTRUCTIONS, usage_guide_tool
 from .setup_flow import SETUP_PROMPT, setup_prompt, setup_prompt_result
 from .gateway_control import CONTROL_TOOLS, control_tools, call_control_tool
 from .team_board import NOT_ENABLED as BOARD_NOT_ENABLED, TEAM_BOARD_TOOLS, TeamBoard, team_board_tools
+from . import brief_templates
 
 log = logging.getLogger("aiteam.connector")
 SESSION_TOOLS = ("sessions_list", "session_status", "sessions_history", "sessions_search", "sessions_send")
@@ -682,7 +685,7 @@ class Connector:
         return types.Tool(name=t.name, title=t.title, description=desc, inputSchema=schema, annotations=t.annotations)
 
     async def list_tools(self) -> list[types.Tool]:
-        tools = [usage_guide_tool()] + native_tools(self.order) + health_tools(self.order) + ai_tools(self.order) \
+        tools = [usage_guide_tool(), brief_templates.brief_templates_tool()] + native_tools(self.order) + health_tools(self.order) + ai_tools(self.order) \
             + (model_tools(self.order) + control_tools(self.order) if self.model_control else []) + (github_tools() if self.github else []) \
             + (discord_thread_tools() if self.discord else []) + (telegram_tools() if self.telegram else []) \
             + (team_board_tools() if self.team_board else [])
@@ -722,6 +725,8 @@ class Connector:
                 return text(out, not ok)
             if name == "usage_guide":
                 return text(GUIDE)
+            if name == "brief_templates":
+                return brief_templates.call(args)
             if name in MODEL_TOOLS or name in CONTROL_TOOLS:
                 if not self.model_control:
                     return text(f"Tool {name} is not enabled on this connector.", True)

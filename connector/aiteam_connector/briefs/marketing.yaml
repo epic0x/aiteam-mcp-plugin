@@ -1,0 +1,42 @@
+id: marketing
+name: Marketing (campaigns, ads, social, email, content, SEO)
+use_for: [marketing, campaign, ad, ads, social, post, email, newsletter, seo, blog, launch, landing copy]
+standards:
+  - name: "Creative brief in 11 steps (HubSpot)"
+    url: https://blog.hubspot.com/marketing/creative-brief
+  - name: "Creative brief and single-minded proposition (Inovient)"
+    url: https://inovient.io/creative-brief-template/
+  - name: "SMART objectives (Doran, 1981)"
+    url: https://en.wikipedia.org/wiki/SMART_criteria
+fields:
+  all:
+    - key: Objective
+      ask: The business result, SMART when possible (sign-ups, sales, reach), with a number and a date.
+    - key: Audience
+      ask: Who we talk to, what they care about, where they are.
+    - key: Key message
+      ask: The one thing they should remember, in one sentence. If it needs "and", it is two messages.
+    - key: Proof
+      ask: Up to three facts that back the message up, all true and checkable.
+    - key: Call to action
+      ask: The one thing we want them to do next.
+    - key: Channels
+      ask: Where it goes (Instagram, X, email, ads, website).
+    - key: Mandatories
+      ask: What must be in it or must not be (brand, legal lines, claims we can prove, offer, link).
+    - key: Budget
+      ask: Spend allowed, or zero. Never spend without the owner's OK.
+    - key: Measure
+      ask: The KPI we will read afterwards (CTR, sign-ups, cost per sign-up).
+  new-feature:
+    - key: Format
+      ask: Post, reel, carousel, email, ad set, page.
+  improvement:
+    - key: Today
+      ask: The current asset or campaign and its numbers.
+  bug:
+    - key: What is wrong
+      ask: The live asset (link), what is wrong (typo, broken link, wrong claim, wrong audience) and since when.
+    - key: Urgency
+      ask: Pull it now, fix today, or fix in the next round.
+review: Drafts go to the owner for approval before anything is published or any money is spent.

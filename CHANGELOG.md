@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased: coordinator briefs
+- The assistant now acts as the owner's coordinator: every request it sends is labelled **New feature request**, **Improvement** or **Bug found**, and carries four parts: Why, The goal, What needs to be done, What I expect back. The experts decide how. When it needs input it asks the right person one question, says what it will assume meanwhile, and carries on. At the end of a conversation every request and decision becomes a brief, a board task or a follow-up.
+- Brief templates per team type (engineering, design, marketing, video, ops, research, sales, general), each following its field's standard (user stories and acceptance criteria, bug reports, creative briefs, video briefs, change requests, research briefs). They live in `connector/aiteam_connector/briefs/*.yaml`, not in code.
+- New free, read-only tool `brief_templates`: the core rules and team list, one team's template, or a ready skeleton for a team and label.
+- Owners override any template, or add a team, by dropping a YAML file in their briefs folder (`AITEAM_BRIEFS_DIR`, else `<HERMES_HOME>/briefs`). A file that does not parse is skipped and reported; the bundled one stays in use.
+- Usage guide v15: "Coordinator: every request is a brief" plus the short form in the server instructions; the hand-off example is a full brief. The `aiteam-mcp` skill is regenerated and the ChatGPT `get-started` skill gets the same rule.
+
 ## Unreleased: team board tools
 - Four free tools for the team's shared task list: `team_map` (the teams this Son is in, their nodes and links; metadata only, no messages, memories or task contents), `board_list`, `board_create` and `board_update`. Listed only when the box sets `TEAM_BOARD_URL` and `TEAM_BOARD_TOKEN`; calls go to that URL with the bearer, and the token is never logged or returned.
 - `board_update` is compare-and-set: send the version you read. When someone changed the task first, the result is a normal one carrying the latest version, so the caller re-applies its change.
