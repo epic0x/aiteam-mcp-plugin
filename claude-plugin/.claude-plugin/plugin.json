@@ -1,7 +1,7 @@
 {
   "name": "aiteam",
   "displayName": "aiteam.space",
-  "version": "0.1.8",
+  "version": "0.1.9",
   "icon": "./.claude-plugin/icon.png",
   "documentationUrl": "https://aiteam.space/help/connect",
   "supportUrl": "https://aiteam.space/support",

@@ -6,6 +6,9 @@ Every request the assistant sends to the team is a brief: one label, a short tit
 - **Parts:** Why, The goal, What needs to be done, What I expect back.
 - **The experts decide how.** A brief says what and why, never the stack or the method, unless the owner set it.
 - **Asking an expert:** one question by name, plus what the assistant will assume until they answer. It keeps going.
+  It says whether the question blocks the work and gives an answer-by when timing matters; no answer by then means
+  the assumption stands. Written out, a question has six lines: Question, Who answers, Who decides, Answer by,
+  If no answer, Blocking (`ask_expert.block` in `core.yaml`).
 - **End of a conversation:** every request and decision becomes a brief, a board task or a follow-up.
 
 ## Where they live
@@ -15,13 +18,13 @@ Defaults ship with the connector in `connector/aiteam_connector/briefs/`:
 | File | What it holds |
 | --- | --- |
 | `core.yaml` | labels, the four parts, how to ask an expert, the recap rule, the signature |
-| `engineering.yaml` | user story + acceptance criteria; bug report (steps, expected, actual, severity) |
+| `engineering.yaml` | user story + acceptance criteria; bug report (steps, expected, actual, how often, environment, severity, done when) |
 | `design.yaml` | design brief: audience, constraints, references, success |
 | `marketing.yaml` | creative brief: objective, audience, key message, channels, mandatories, budget, KPI |
 | `video.yaml` | video brief: purpose, length and format, script, tone, assets, deliverables, review rounds |
 | `ops.yaml` | change request / incident: system, impact, risk and rollback, window, cost |
 | `research.yaml` | research brief: question, decision, scope, sources, format |
-| `sales.yaml` | customer handoff: customer, context, next step, limits |
+| `sales.yaml` | customer handoff: customer, context, next step, limits; each line Confirmed / Unclear / Not discussed, and can be sent back |
 | `general.yaml` | SMART goal + RACI for anything else |
 
 Each team file names the standard it follows, with a link.
@@ -56,6 +59,9 @@ fields:
     - key: Clause
       ask: Which clause is wrong and why.
 review: Nothing is signed without the owner.
+# optional
+mark_each: [Confirmed, Unclear, Not discussed]   # shown after each detail line
+send_back: The person taking over can send it back if a gap blocks them.
 ```
 
 ## The tool

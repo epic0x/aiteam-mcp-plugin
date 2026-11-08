@@ -47,7 +47,42 @@ def test_every_team_cites_a_standard_and_covers_bugs():
 
 def test_engineering_bug_follows_the_bug_report_standard():
     keys = {f["key"] for f in bt.load()["teams"]["engineering"]["fields"]["bug"]}
-    assert {"Steps to reproduce", "Expected", "Actual", "Severity", "How often", "Environment"} <= keys
+    assert {"Steps to reproduce", "Expected", "Actual", "Severity", "How often", "Environment", "Done when"} <= keys
+    done = next(f["ask"] for f in bt.load()["teams"]["engineering"]["fields"]["bug"] if f["key"] == "Done when")
+    assert "no longer reproduce" in done and "test" in done
+
+
+def test_open_question_block_is_in_core_and_in_every_skeleton():
+    t = bt.load()
+    keys = [b["key"] for b in t["core"]["ask_expert"]["block"]]
+    assert keys == ["Question", "Who answers", "Who decides", "Answer by", "If no answer", "Blocking"]
+    for team in t["teams"].values():
+        s = bt.skeleton(t["core"], team, "improvement")
+        assert "**Open question**" in s and "- If no answer: <" in s and "- Blocking: <" in s, team["id"]
+
+
+def test_sales_handoff_marks_each_line_and_can_be_sent_back():
+    t = bt.load()
+    sales = t["teams"]["sales"]
+    assert sales["mark_each"] == ["Confirmed", "Unclear", "Not discussed"]
+    s = bt.skeleton(t["core"], sales, "new-feature")
+    detail = [l for l in s.splitlines() if l.startswith("- Customer: ")]
+    assert detail and detail[0].endswith("[Confirmed / Unclear / Not discussed]")
+    assert "send the handoff back" in s
+    eng = bt.skeleton(t["core"], t["teams"]["engineering"], "bug")
+    assert "[Confirmed" not in eng and "send the handoff back" not in eng
+
+
+def test_bad_optional_keys_are_reported_and_the_default_stays(tmp_path):
+    (tmp_path / "sales.yaml").write_text(yaml.safe_dump(dict(bt.load()["teams"]["sales"], mark_each="Confirmed")))
+    core = dict(bt.load()["core"])
+    core["ask_expert"] = dict(core["ask_expert"], block=[{"key": "Question"}])
+    (tmp_path / "core.yaml").write_text(yaml.safe_dump(core))
+    t = bt.load(tmp_path)
+    probs = " ".join(t["problems"]) if isinstance(t["problems"], list) else json.dumps(t["problems"])
+    assert "mark_each" in probs and "ask_expert.block" in probs
+    assert t["teams"]["sales"]["mark_each"] == ["Confirmed", "Unclear", "Not discussed"]
+    assert len(t["core"]["ask_expert"]["block"]) == 6
 
 
 def test_templates_name_no_people_ids_or_emails():

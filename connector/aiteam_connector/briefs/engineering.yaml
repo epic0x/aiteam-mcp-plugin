@@ -47,4 +47,6 @@ fields:
       ask: Blocker (nobody can use it), major (a main flow is broken), minor (a workaround exists) or cosmetic.
     - key: Since when / who sees it
       ask: When it started, and whether it hits everyone or only some users, devices or browsers.
+    - key: Done when
+      ask: The steps above no longer reproduce it, and a test that would have caught it is in place.
 review: The expert opens a pull request with tests; the owner's project workflow decides who reviews and merges.
