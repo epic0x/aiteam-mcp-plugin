@@ -5,7 +5,9 @@ import argparse
 import contextlib
 import logging
 import os
+import time
 from dataclasses import dataclass, field
+from typing import Callable
 from urllib.parse import urlsplit
 
 import httpx
@@ -16,7 +18,7 @@ from starlette.routing import Route
 
 from . import __version__
 from .auth import Jwks, verify_relay_jwt
-from .exchange import Exchanger
+from .exchange import ExchangeError, Exchanger, InvalidGrant
 from .proxy import proxy
 
 log = logging.getLogger("aiteam_relay")
@@ -38,6 +40,8 @@ class Settings:
     son_host_suffix: str = field(default_factory=lambda: _env("RELAY_SON_HOST_SUFFIX", ".aiteam.space"))
     challenge: str = field(default_factory=lambda: os.environ.get("OPENAI_APPS_CHALLENGE", ""))
     challenge_file: str = field(default_factory=lambda: os.environ.get("OPENAI_APPS_CHALLENGE_FILE", ""))
+    # on = the relay is its own MCP server over every box of the grant (multibox.py); off = one-box stream proxy
+    multi_box: bool = field(default_factory=lambda: _env("RELAY_MULTI_BOX", "off").lower() in ("on", "1", "true"))
 
     @property
     def resource(self) -> str:
@@ -64,14 +68,30 @@ class Settings:
 
 
 def create_app(settings: Settings | None = None, *, client: httpx.AsyncClient | None = None,
-               jwks=None) -> Starlette:
+               jwks=None, box_transport: httpx.AsyncBaseTransport | None = None,
+               clock: Callable[[], float] = time.time, box_timeout: float | None = None) -> Starlette:
+    """`box_transport` / `clock` / `box_timeout` exist for tests (multi-box mode only)."""
     s = settings or Settings()
     http = client or httpx.AsyncClient(timeout=httpx.Timeout(connect=10, read=None, write=30, pool=10),
                                        headers={"user-agent": f"aiteam-relay/{__version__}"},
                                        follow_redirects=False)
     keys = jwks or Jwks(s.issuer + "/oauth/jwks", http)
     exchanger = Exchanger(http, token_url=s.issuer + "/oauth/token", suffix=s.son_host_suffix,
-                          relay_host=s.relay_host)
+                          relay_host=s.relay_host, clock=clock)
+    multi = None
+    if s.multi_box:
+        from mcp.server.streamable_http_manager import StreamableHTTPSessionManager
+
+        from .boxes import BOX_TIMEOUT, BoxPool
+        from .multibox import Router, build_server
+        from .targets import TargetsClient
+        targets = TargetsClient(http, url=s.issuer + "/oauth/targets", suffix=s.son_host_suffix,
+                                relay_host=s.relay_host, clock=clock)
+        pool = BoxPool(exchanger, transport=box_transport, clock=clock,
+                       box_timeout=BOX_TIMEOUT if box_timeout is None else box_timeout)
+        router = Router(targets, exchanger, pool, clock=clock)
+        # Stateless: every HTTP request is authenticated and scoped on its own; no MCP session outlives a request.
+        multi = StreamableHTTPSessionManager(app=build_server(router), json_response=False, stateless=True)
 
     def unauthorized(error: str | None = None, desc: str = "") -> Response:
         www = f'Bearer resource_metadata="{s.prm_url}"'
@@ -109,10 +129,25 @@ def create_app(settings: Settings | None = None, *, client: httpx.AsyncClient | 
         claims = await verify_relay_jwt(token, jwks=keys, issuer=s.issuer, resource=s.resource)
         if claims is None:
             return unauthorized("invalid_token", "token is invalid, expired or not for this resource")
+        if multi is not None:
+            return await multi_box(request, token, claims)
         return await proxy(request, client=http, exchanger=exchanger, subject_token=token,
                            subject_exp=claims.get("exp"),
                            on_invalid_grant=lambda d: unauthorized("invalid_token", d or "sign in again"),
                            on_error=upstream_error)
+
+    async def multi_box(request: Request, token: str, claims: dict) -> Response:
+        from .multibox import SCOPE_KEY, Caller, prefetch
+        c = Caller(token, claims)
+        try:
+            await prefetch(router, c)
+        except InvalidGrant as e:
+            return unauthorized("invalid_token", str(e) or "sign in again")
+        except ExchangeError as e:
+            return upstream_error(502, str(e))
+        request.scope[SCOPE_KEY] = c
+        # Only the MCP transport headers reach the SDK; the bearer stays here (it is in the scope as Caller).
+        return _Asgi(multi.handle_request)
 
     routes = [
         Route("/.well-known/oauth-protected-resource", prm, methods=["GET"]),
@@ -124,7 +159,10 @@ def create_app(settings: Settings | None = None, *, client: httpx.AsyncClient | 
 
     @contextlib.asynccontextmanager
     async def lifespan(_app):
-        yield
+        async with contextlib.AsyncExitStack() as stack:
+            if multi is not None:
+                await stack.enter_async_context(multi.run())
+            yield
         if client is None:
             await http.aclose()
 
@@ -132,6 +170,17 @@ def create_app(settings: Settings | None = None, *, client: httpx.AsyncClient | 
     app.router.redirect_slashes = False
     app.state.settings, app.state.exchanger, app.state.http = s, exchanger, http
     return app
+
+
+class _Asgi(Response):
+    """Hand the rest of a request to a raw ASGI app (the MCP SDK transport) from a Starlette endpoint."""
+
+    def __init__(self, asgi) -> None:  # noqa: D107 (no body of its own)
+        self.asgi = asgi
+        self.background = None
+
+    async def __call__(self, scope, receive, send) -> None:
+        await self.asgi(scope, receive, send)
 
 
 def main(argv: list[str] | None = None) -> None:

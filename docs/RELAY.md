@@ -60,6 +60,59 @@ Logs: no tokens, no full upstream URLs (only the Son host name). The `httpx` log
 | `RELAY_SON_HOST_SUFFIX` | `.aiteam.space` | allowed Son host suffix (SSRF guard) |
 | `OPENAI_APPS_CHALLENGE` | unset | OpenAI domain verification token |
 | `OPENAI_APPS_CHALLENGE_FILE` | unset | or read the token from this file (used when the variable is unset) |
+| `RELAY_MULTI_BOX` | `off` | `on` = the relay is its own MCP server over every box in the connection (see Multiple boxes) |
+
+## Multiple boxes
+
+With `RELAY_MULTI_BOX=on` one connection reaches every box the owner picked on aiteam.space: all boxes, all boxes in
+one project, or a hand-picked list. The relay stops forwarding raw MCP traffic and becomes an MCP server itself
+(Streamable HTTP, stateless). It talks to each box as an MCP client.
+
+```
+client --relay token--> relay --GET /oauth/targets (relay token)--> aiteam.space   boxes in the connection, 30 s cache
+                              --POST /oauth/token target=<box id>--> aiteam.space   box token, max 5 min, per box
+                              --MCP, box token--> https://<box>.aiteam.space/mcp
+```
+
+1. The relay verifies the client token as before.
+2. It asks aiteam.space which boxes the connection reaches. aiteam.space resolves this live, so a box the owner
+   removes, or a project they leave, drops out within 30 seconds.
+3. For each tool call it exchanges the token for that one box (`target=<son or node id>`). aiteam.space checks
+   ownership again on every exchange. A box answering 401 loses only its own cached token, and the call is tried once
+   more.
+
+### Tools
+| Tool | What it does |
+|---|---|
+| every box tool | Listed once by name with an extra `box` argument (the box names in this connection). `box` is required when the connection has more than one box. A tool that only some boxes have says `Available on: a, b`. The result comes back exactly as the box sent it. |
+| `boxes_list` | The boxes in the connection, each with a live health check (the box's `box_health`, 5 s per box). |
+| `kanban_list`, `kanban_read`, `memory_read` | Read-only. `box` = one box, or `all` to ask every box at once. The answer is grouped per box with `ok` or `error`. |
+| `calendar_post` | Adds a post to a content calendar box in the connection through its `board_add_item` tool. With `date` it waits for review on that day; without one it lands in Unscheduled. It never approves or publishes. |
+
+Annotations: when boxes disagree on a tool's hints, the relay shows the least safe one (read-only only if every box
+says so, destructive if any box says so).
+
+### Limits
+- 50 boxes per connection. Anything after that is dropped and `boxes_list` reports `truncated`.
+- 8 boxes asked at once, 5 s per box for listing tools, health and `all` reads. A box that is down or slow is left
+  out of the tool list and shows `ok: false` in `boxes_list`; the other boxes still answer.
+- An `all` answer is capped at 256 KB. Boxes past the cap show `truncated` and can be asked on their own.
+- Tool lists are cached 60 s per box, the box list 30 s, box tokens until 30 s before they expire.
+- Inline calendar media (`media_b64`) up to 2 MB. Use `media_url` for anything larger.
+
+### Box addresses
+Every box address from aiteam.space passes the same check as today: `https://<one label>.aiteam.space/mcp`, no port,
+no user info, never `mcp.aiteam.space`. External nodes must be published under that suffix too. Any other address is
+never called and shows in `boxes_list` as `address not allowed`. The relay also refuses an exchange whose box address
+differs from the one in the box list.
+
+### Not merged
+Box prompts and resources are not merged into the relay; only box tools are. The relay offers its own introduction
+prompt and resource when the connector package is installed next to it.
+
+### Single-box connections
+Connections made before this change keep working unchanged: one box, `box` optional, and the exchange is sent without
+`target` as before. With `RELAY_MULTI_BOX=off` (the default) the relay is the plain stream proxy described above.
 
 ## Run
 ```
