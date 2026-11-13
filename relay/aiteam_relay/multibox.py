@@ -308,7 +308,8 @@ class Router:
         out = native_tools(t, self.pool.fanout_timeout)
         if self.code is not None:
             from .codemode import CODE_TOOLS, code_tools
-            out += code_tools()
+            if (await self.code.ready())[0]:
+                out += code_tools()
             by_name = {k: v for k, v in by_name.items() if k not in CODE_TOOLS}
         for name in sorted(by_name):
             rows = by_name[name]

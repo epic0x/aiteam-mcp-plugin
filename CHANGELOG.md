@@ -7,7 +7,7 @@
 - New relay tools: `boxes_list`, `kanban_list`, `kanban_read`, `memory_read` (one box or `all`) and `calendar_post` (adds a post for review, never publishes). See docs/RELAY.md, Multiple boxes.
 
 ### relay: Code Mode
-- `RELAY_CODE_MODE=on` adds `search`, `describe` and `execute`: one JavaScript snippet runs over every box in the connection and only its result comes back. Snippets run in a locked sandbox and can only use read-only tools. Off by default. See docs/RELAY.md, Code Mode.
+- `RELAY_CODE_MODE=on` adds `search`, `describe` and `execute`: one JavaScript snippet runs over every box in the connection and only its result comes back. Snippets run in a separate sandbox process and can only use read-only tools. Needs Node 25 or later: at start the relay checks that the sandbox is refused network, file, process and worker access, and offers the code tools only when it is. Off by default. See docs/RELAY.md, Code Mode.
 
 ## v0.1.9 (2026-11-08): coordinator briefs, team board, model controls
 Claude plugin 0.1.9 (re-validate in the Claude directory) and ChatGPT package 0.1.9 (new ZIP from the `v0.1.9` tag).

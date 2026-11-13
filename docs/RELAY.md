@@ -164,8 +164,14 @@ API inside a snippet (one object argument each): `boxes.list`, `boxes.health`, `
 
 ### How a snippet runs
 - In `relay/sandbox/runner.mjs`: a QuickJS interpreter (WebAssembly) inside a Node process started with
-  `--permission` (reads only its own folder; no network, writes, child processes or workers), no string `eval` in the
-  host, and an empty environment. No tokens or settings ever enter it.
+  `--permission`, reading only its own folder, with no string `eval` in the host and an empty environment. No tokens
+  or settings ever enter it.
+- Code Mode turns on only after a start-up check on the installed Node: the sandbox process, started with the same
+  flags, tries to open a socket to a local port, fetch it, read a file outside its folder, write, start a process and
+  start a worker. Node must refuse every one and nothing may reach the port. Node's permission model covers network
+  access from Node 25 on, so older Node is refused outright. Until the check passes the code tools are not offered,
+  `execute` answers "Code Mode is not set up on this relay yet" with the reason, and the log says the same. While
+  off, the check runs again every 5 minutes.
 - Every API call goes back to the relay and runs like a plain tool call: the connection's boxes are read live, the
   box must be one of them, and the call uses that box's own exchanged token.
 - `tools.call` runs read-only tools only. Anything that changes something answers "needs approval" and has to be
@@ -176,8 +182,12 @@ API inside a snippet (one object argument each): `boxes.list`, `boxes.health`, `
 20,000 characters of code, 4 runs at once per relay.
 
 ### Setup
-`cd relay/sandbox && npm ci` (Node 22 or later). `RELAY_NODE` points at another `node`; `RELAY_SANDBOX_DIR` at another
-copy of the folder.
+1. Install Node 25 or later on the relay host.
+2. `cd relay/sandbox && npm ci`.
+3. Set `RELAY_CODE_MODE=on` (with `RELAY_MULTI_BOX=on`) and restart the relay. The log shows "Code Mode is on" or why
+   it is off.
+
+`RELAY_NODE` points at a `node` other than the one on `PATH`; `RELAY_SANDBOX_DIR` at another copy of the folder.
 
 ## Run
 ```

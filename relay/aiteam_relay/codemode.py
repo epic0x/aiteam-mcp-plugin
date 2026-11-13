@@ -5,10 +5,12 @@
   execute(code)    run one JavaScript snippet against the API below; only its return value comes back
 
 The snippet runs in sandbox/runner.mjs: a QuickJS (WebAssembly) interpreter inside a Node process started with the
-permission model on (no files beyond its own folder, no network, no child processes, no workers) and an empty
-environment. The snippet's only way out is the API: every method call comes back here and runs exactly like a plain
-tool call: the grant's boxes are read live (targets.py), the chosen box must be in them, and the call goes with that
-box's own exchanged token. Nothing in the sandbox ever holds a token.
+permission model on (reads only its own folder; network, writes, child processes and workers refused) and an empty
+environment. Code Mode turns on only after a start-up check proves this on the installed Node (25 or later): the
+sandbox process tries each of those and must be refused by Node itself. Otherwise the code tools are not offered and
+the log says why. The snippet's only way out is the API: every method call comes back here and runs exactly like a
+plain tool call: the grant's boxes are read live (targets.py), the chosen box must be in them, and the call goes with
+that box's own exchanged token. Nothing in the sandbox ever holds a token.
 
 Writes do not run from a snippet. tools.call only runs tools the box marks read-only; anything else answers
 "needs approval" and the caller uses the plain tool, where the box's own approval rules apply.
@@ -21,6 +23,7 @@ import logging
 import os
 import re
 import shutil
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -37,6 +40,11 @@ log = logging.getLogger("aiteam_relay.codemode")
 
 CODE_TOOLS = ("search", "describe", "execute")
 SANDBOX_DIR = Path(os.environ.get("RELAY_SANDBOX_DIR") or Path(__file__).resolve().parent.parent / "sandbox")
+MIN_NODE = 25  # Node's permission model only covers network access from Node 25 on
+PROBES = ("net", "fetch", "read", "write", "child", "worker")
+CHECK_SECONDS = 15.0
+RECHECK_SECONDS = 300.0  # while off, look again every 5 minutes (after npm ci, say)
+NOT_READY = "Code Mode is not set up on this relay yet"
 LIMITS = {"memoryBytes": 32 << 20, "stackBytes": 512 << 10, "cpuMs": 10_000, "maxCalls": 50, "maxLogs": 200,
           "maxOutBytes": 256 << 10}
 WALL_SECONDS = 60.0  # whole run, waiting on boxes included
@@ -139,9 +147,104 @@ class CodeMode:
         self.limits = {**LIMITS, **(limits or {})}
         self.wall = wall
         self.runs = asyncio.Semaphore(RUNS_AT_ONCE)
+        self._ready: tuple[bool, str] | None = None
+        self._checked = 0.0
+        self._check_lock = asyncio.Lock()
+
+    # ------------------------------------------------------------------ start-up check
+    def _argv(self, *, locked: bool = True) -> list[str]:
+        d = str(self.sandbox_dir)
+        flags = ["--permission", f"--allow-fs-read={d}", "--disallow-code-generation-from-strings"] if locked else []
+        return [self.node, *flags, "--max-old-space-size=96", f"{d}/runner.mjs"]
+
+    async def selfcheck(self, port: int, *, locked: bool = True) -> dict:
+        """Run the sandbox's own probes against 127.0.0.1:port. `locked=False` exists only for the test that shows the
+        probes do see an open network when the flags are missing."""
+        proc = await asyncio.create_subprocess_exec(*self._argv(locked=locked), stdin=asyncio.subprocess.PIPE,
+                                                    stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL,
+                                                    env={}, cwd=str(self.sandbox_dir), limit=MAX_LINE)
+        try:
+            job = {"selfcheck": {"port": port, "path": str(Path(__file__).resolve())}}
+            proc.stdin.write((json.dumps(job) + "\n").encode())
+            await proc.stdin.drain()
+            async with asyncio.timeout(CHECK_SECONDS):
+                while True:
+                    line = await proc.stdout.readline()
+                    if not line:
+                        return {"error": "the sandbox did not answer the check"}
+                    try:
+                        msg = json.loads(line)
+                    except ValueError:
+                        continue
+                    sc = (msg.get("done") or {}).get("selfcheck") if isinstance(msg, dict) else None
+                    if isinstance(sc, dict):
+                        return sc
+        finally:
+            if proc.returncode is None:
+                proc.kill()
+            await proc.wait()
+
+    async def check(self) -> tuple[bool, str]:
+        """Code Mode turns on only when Node is new enough, the sandbox packages are installed, and the sandbox
+        process is refused every probe by Node itself, with nothing reaching the local test port."""
+        if not (Path(self.sandbox_dir) / "node_modules" / "quickjs-emscripten-core").is_dir():
+            return False, "the sandbox packages are missing (run npm ci in relay/sandbox)"
+        reached = 0
+
+        async def on_conn(_r, w):
+            nonlocal reached
+            reached += 1
+            w.close()
+
+        server = await asyncio.start_server(on_conn, "127.0.0.1", 0)
+        try:
+            port = server.sockets[0].getsockname()[1]
+            try:
+                sc = await self.selfcheck(port)
+            except FileNotFoundError:
+                return False, f"Node {MIN_NODE} or later is not installed"
+            except TimeoutError:
+                return False, "the sandbox check timed out"
+        finally:
+            server.close()
+            await server.wait_closed()
+        if "error" in sc:
+            return False, str(sc["error"])
+        v = str(sc.get("node") or "")
+        try:
+            major = int(v.split(".")[0])
+        except ValueError:
+            return False, "could not read the Node version"
+        if major < MIN_NODE:
+            return False, f"Node {v} is too old: Code Mode needs Node {MIN_NODE} or later"
+        open_ = [k for k in PROBES if sc.get(k) != "denied"]
+        if open_ or reached:
+            return False, "the sandbox was not refused: " + ", ".join(open_ or ["net"])
+        return True, f"Node {v}, sandbox refused network, files, processes and workers"
+
+    async def ready(self) -> tuple[bool, str]:
+        now = time.monotonic()
+        if self._ready is not None and (self._ready[0] or now < self._checked + RECHECK_SECONDS):
+            return self._ready
+        async with self._check_lock:
+            if self._ready is not None and (self._ready[0] or now < self._checked + RECHECK_SECONDS):
+                return self._ready
+            try:
+                got = await self.check()
+            except Exception as e:  # never let the check break the relay
+                got = (False, f"the sandbox check failed ({type(e).__name__})")
+            if got[0]:
+                log.info("Code Mode is on: %s", got[1])
+            else:
+                log.warning("Code Mode is off, code tools are not offered: %s", got[1])
+            self._ready, self._checked = got, time.monotonic()
+            return got
 
     # ------------------------------------------------------------------ dispatch
     async def call(self, c: "Caller", t: "Targets", name: str, args: dict) -> types.CallToolResult:
+        ok, why = await self.ready()
+        if not ok:
+            return _result({"ok": False, "error": f"{NOT_READY}: {why}"}, error=True)
         if name == "search":
             return await self.search(c, t, args)
         if name == "describe":
@@ -260,8 +363,7 @@ class CodeMode:
     async def _run(self, c: "Caller", code: str) -> dict:
         d = str(self.sandbox_dir)
         proc = await asyncio.create_subprocess_exec(
-            self.node, "--permission", f"--allow-fs-read={d}", "--disallow-code-generation-from-strings",
-            "--max-old-space-size=96", f"{d}/runner.mjs",
+            *self._argv(),
             stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
             env={}, cwd=d, limit=MAX_LINE)
         try:

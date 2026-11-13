@@ -1,32 +1,51 @@
 """Code Mode (RELAY_CODE_MODE=on): search / describe / execute through a real MCP session, the fake aiteam.space and
 fake boxes of test_multibox, and the real sandbox process (sandbox/runner.mjs under Node's permission model)."""
+import asyncio
 import contextlib
 import json
 import shutil
+import subprocess
 from pathlib import Path
 
 import httpx
 import pytest
 
 from aiteam_relay.app import Settings, create_app
-from aiteam_relay.codemode import NEEDS_APPROVAL, SANDBOX_DIR
+from aiteam_relay.codemode import MIN_NODE, NEEDS_APPROVAL, PROBES, SANDBOX_DIR, CodeMode
 
 from .test_multibox import SON_B, DeadAware, FakeJwks, V3, clock, data, session, world  # noqa: F401 (fixtures)
 
 NODE = shutil.which("node")
 HAVE_SANDBOX = NODE is not None and (Path(SANDBOX_DIR) / "node_modules" / "quickjs-emscripten-core").is_dir()
-needs_sandbox = pytest.mark.skipif(not HAVE_SANDBOX, reason="node or sandbox/node_modules missing (npm ci in sandbox/)")
+has_packages = pytest.mark.skipif(not HAVE_SANDBOX, reason="node or sandbox/node_modules missing (npm ci in sandbox/)")
+
+
+def _node_major() -> int:
+    try:
+        return int(subprocess.run([NODE, "--version"], capture_output=True, text=True, timeout=10).stdout
+                   .strip().lstrip("v").split(".")[0])
+    except Exception:
+        return 0
+
+
+NODE_OK = NODE is not None and _node_major() >= MIN_NODE
+# Code Mode only turns on with both (see CodeMode.check), so every run test needs both.
+needs_sandbox = pytest.mark.skipif(not (HAVE_SANDBOX and NODE_OK),
+                                   reason=f"needs Node {MIN_NODE}+ and sandbox/node_modules (npm ci in sandbox/)")
 
 
 @contextlib.asynccontextmanager
-async def relay(world, clock, monkeypatch, *, code="on", limits=None, wall=20.0):
+async def relay(world, clock, monkeypatch, *, code="on", limits=None, wall=20.0, sandbox_dir=None):
     for k in ("RELAY_PUBLIC_URL", "AITEAM_ISSUER", "RELAY_MULTI_BOX", "RELAY_CODE_MODE"):
         monkeypatch.delenv(k, raising=False)
     monkeypatch.setenv("RELAY_MULTI_BOX", "on")
     monkeypatch.setenv("RELAY_CODE_MODE", code)
+    opts = {"limits": limits or {}, "wall": wall}
+    if sandbox_dir is not None:
+        opts["sandbox_dir"] = sandbox_dir
     app = create_app(Settings(), client=httpx.AsyncClient(transport=httpx.MockTransport(world.site)),
                      jwks=FakeJwks(), box_transport=DeadAware(world), clock=clock, box_timeout=2.0,
-                     code_mode_opts={"limits": limits or {}, "wall": wall})
+                     code_mode_opts=opts)
     async with contextlib.AsyncExitStack() as st:
         for b in world.boxes.values():
             await st.enter_async_context(b.mgr.run())
@@ -189,3 +208,99 @@ async def test_execute_code_required_and_capped(world, clock, monkeypatch):
         r1 = await s.call_tool("execute", {"code": "  "})
         r2 = await s.call_tool("execute", {"code": "x" * 20_001})
     assert r1.isError and r2.isError
+
+
+# ---------------------------------------------------------------------------------------------------------- start-up
+async def _listener():
+    hits = []
+
+    async def on_conn(_r, w):
+        hits.append(1)
+        w.close()
+
+    server = await asyncio.start_server(on_conn, "127.0.0.1", 0)
+    return server, server.sockets[0].getsockname()[1], hits
+
+
+@needs_sandbox
+async def test_runner_process_is_refused_network_files_processes():
+    """The sandbox process itself (not the interpreter inside it) tries to open a socket to a live local port, fetch
+    it, read a file outside its folder, write, spawn and start a worker: Node refuses every one, nothing connects."""
+    cm = CodeMode(router=None)
+    server, port, hits = await _listener()
+    try:
+        sc = await cm.selfcheck(port)
+    finally:
+        server.close()
+        await server.wait_closed()
+    assert {k: sc[k] for k in PROBES} == {k: "denied" for k in PROBES}, sc
+    assert hits == []
+    assert not (Path(SANDBOX_DIR) / ".selfcheck").exists()
+
+
+@has_packages
+async def test_probe_is_real_without_the_flags():
+    """Control: the same probe started without the permission flags does reach the port, so a 'denied' above is Node
+    refusing, not a probe that never tried."""
+    cm = CodeMode(router=None)
+    server, port, hits = await _listener()
+    try:
+        sc = await cm.selfcheck(port, locked=False)
+    finally:
+        server.close()
+        await server.wait_closed()
+        (Path(SANDBOX_DIR) / ".selfcheck").unlink(missing_ok=True)
+    assert sc["net"] == "allowed" and hits
+
+
+@needs_sandbox
+async def test_check_passes_on_new_node():
+    ok, why = await CodeMode(router=None).check()
+    assert ok, why
+
+
+async def test_check_refuses_old_node(monkeypatch):
+    cm = CodeMode(router=None)
+
+    async def old(port, locked=True):
+        return {"node": "24.11.0", **{k: "denied" for k in PROBES}}
+
+    monkeypatch.setattr(cm, "selfcheck", old)
+    monkeypatch.setattr(cm, "sandbox_dir", _fake_sandbox())
+    ok, why = await cm.check()
+    assert not ok and "too old" in why and str(MIN_NODE) in why
+
+
+async def test_check_refuses_when_a_probe_is_not_denied(monkeypatch):
+    cm = CodeMode(router=None)
+
+    async def leaky(port, locked=True):
+        return {"node": "26.0.0", **{k: "denied" for k in PROBES}, "net": "allowed"}
+
+    monkeypatch.setattr(cm, "selfcheck", leaky)
+    monkeypatch.setattr(cm, "sandbox_dir", _fake_sandbox())
+    ok, why = await cm.check()
+    assert not ok and "net" in why
+
+
+def _fake_sandbox():
+    import tempfile
+    d = Path(tempfile.mkdtemp()) / "sandbox"
+    (d / "node_modules" / "quickjs-emscripten-core").mkdir(parents=True)
+    return d
+
+
+async def test_not_set_up_hides_code_tools_and_says_why(world, clock, monkeypatch, tmp_path):
+    # tmp_path is an empty sandbox folder: no packages installed
+    async with relay(world, clock, monkeypatch, sandbox_dir=tmp_path) as app, session(app, V3()) as s:
+        names = {t.name for t in (await s.list_tools()).tools}
+        r = await s.call_tool("execute", {"code": "return 1"})
+    assert not {"search", "describe", "execute"} & names
+    assert "boxes_list" in names  # the rest of the relay still works
+    assert r.isError and "not set up" in data(r)["error"] and "npm ci" in data(r)["error"]
+
+
+async def test_missing_node_says_why(tmp_path):
+    (tmp_path / "node_modules" / "quickjs-emscripten-core").mkdir(parents=True)
+    ok, why = await CodeMode(router=None, node=str(tmp_path / "no-node"), sandbox_dir=tmp_path).check()
+    assert not ok and f"Node {MIN_NODE}" in why

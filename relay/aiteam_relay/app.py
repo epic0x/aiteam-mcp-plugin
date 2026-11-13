@@ -104,6 +104,7 @@ def create_app(settings: Settings | None = None, *, client: httpx.AsyncClient | 
     exchanger = Exchanger(http, token_url=s.issuer + "/oauth/token", suffix=s.son_host_suffix,
                           relay_host=s.relay_host, clock=clock)
     multi = None
+    router = None
     if s.multi_box:
         from mcp.server.streamable_http_manager import StreamableHTTPSessionManager
 
@@ -191,6 +192,8 @@ def create_app(settings: Settings | None = None, *, client: httpx.AsyncClient | 
             if multi is not None:
                 await stack.enter_async_context(multi.run())
                 stack.push_async_callback(pool.tools_cache.aclose)
+            if router is not None and router.code is not None:
+                await router.code.ready()  # logs "Code Mode is on" or why the code tools are not offered
             yield
         if client is None:
             await http.aclose()

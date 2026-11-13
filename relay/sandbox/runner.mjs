@@ -20,6 +20,31 @@ const done = (o) => { out({ done: o }); process.exit(0) }
 const first = await lines.next()
 if (first.done) done({ ok: false, error: "no input" })
 const job = JSON.parse(first.value)
+
+// Start-up check (codemode.py CodeMode.check): this process, with the same flags as a real run, tries to reach the
+// relay's local test port, read a file outside its folder, write, start a process and start a worker. Each one must be
+// refused by Node itself (ERR_ACCESS_DENIED); anything else keeps Code Mode off.
+if (job.selfcheck) {
+  const r = { node: process.versions.node }
+  const why = (e) => (e && e.code === "ERR_ACCESS_DENIED") ? "denied" : "not denied: " + String((e && e.code) || e)
+  const port = job.selfcheck.port
+  try {
+    const net = await import("node:net")
+    await new Promise((res, rej) => {
+      const s = net.connect(port, "127.0.0.1", () => { s.destroy(); res() })
+      s.on("error", rej)
+    })
+    r.net = "allowed"
+  } catch (e) { r.net = why(e) }
+  try { await fetch(`http://127.0.0.1:${port}/`); r.fetch = "allowed" } catch (e) { r.fetch = why(e.cause ?? e) }
+  const fs = await import("node:fs")
+  try { fs.readFileSync(job.selfcheck.path); r.read = "allowed" } catch (e) { r.read = why(e) }
+  try { fs.writeFileSync(new URL("./.selfcheck", import.meta.url), "x"); r.write = "allowed" } catch (e) { r.write = why(e) }
+  try { (await import("node:child_process")).execFileSync(process.execPath, ["--version"]); r.child = "allowed" } catch (e) { r.child = why(e) }
+  try { const w = new (await import("node:worker_threads")).Worker("", { eval: true }); await w.terminate(); r.worker = "allowed" } catch (e) { r.worker = why(e) }
+  done({ ok: true, selfcheck: r })
+}
+
 const L = { memoryBytes: 32 << 20, stackBytes: 512 << 10, cpuMs: 10000, maxCalls: 50, maxLogs: 200,
   maxOutBytes: 256 << 10, ...job.limits }
 
