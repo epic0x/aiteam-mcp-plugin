@@ -1,6 +1,7 @@
-"""RFC 8693 token exchange at aiteam.space: relay token (aud = relay) -> short-lived Son token (aud = Son /mcp).
+"""RFC 8693 token exchange at aiteam.space: relay token (aud = relay) -> short-lived box token (aud = box /mcp).
 
-The exchanged token and the Son URL are cached by sha256(subject token) until the exchanged token's exp - 30 s.
+The exchanged token and the box URL are cached by sha256(subject token) (+ the target id when one is sent) until the
+exchanged token's exp - 30 s.
 """
 from __future__ import annotations
 
@@ -9,6 +10,7 @@ import logging
 import re
 import time
 from dataclasses import dataclass
+from typing import Callable
 from urllib.parse import urlsplit
 
 import httpx
@@ -28,6 +30,10 @@ class InvalidGrant(Exception):
 
 class ExchangeError(Exception):
     """aiteam.space unreachable, or an answer the relay cannot use (bad JSON, Son URL outside the allowed hosts)."""
+
+
+class InvalidTarget(ExchangeError):
+    """aiteam.space refused this one target (not in the grant's scope right now). The grant itself stays live."""
 
 
 @dataclass(frozen=True)
@@ -64,17 +70,24 @@ def token_key(token: str) -> str:
     return hashlib.sha256(token.encode()).hexdigest()
 
 
+def cache_key(subject_token: str, target: str | None = None) -> str:
+    return token_key(subject_token) + (f"|{target}" if target else "")
+
+
 class Exchanger:
-    def __init__(self, client: httpx.AsyncClient, *, token_url: str, suffix: str, relay_host: str) -> None:
+    def __init__(self, client: httpx.AsyncClient, *, token_url: str, suffix: str, relay_host: str,
+                 clock: Callable[[], float] = time.time) -> None:
         self.client = client
         self.token_url = token_url
         self.suffix = suffix
         self.relay_host = relay_host
+        self.clock = clock
         self.cache: dict[str, Exchanged] = {}
         self.calls = 0  # exchanges sent (tests, metrics)
 
-    def drop(self, subject_token: str) -> None:
-        self.cache.pop(token_key(subject_token), None)
+    def drop(self, subject_token: str, target: str | None = None) -> None:
+        """Forget one cached box token: the single-target one, or only `target`'s."""
+        self.cache.pop(cache_key(subject_token, target), None)
 
     def _prune(self, now: float) -> None:
         for k in [k for k, v in self.cache.items() if v.expires_at <= now]:
@@ -82,13 +95,17 @@ class Exchanger:
         while len(self.cache) >= CACHE_MAX:
             self.cache.pop(next(iter(self.cache)))
 
-    async def get(self, subject_token: str, subject_exp: float | None = None) -> Exchanged:
-        now = time.time()
-        key = token_key(subject_token)
+    async def get(self, subject_token: str, subject_exp: float | None = None, *, target: str | None = None,
+                  extra: dict[str, str] | None = None) -> Exchanged:
+        """`target` (a son or node id) is sent as `target=` and keys the cache; None = the legacy single-target form."""
+        now = self.clock()
+        key = cache_key(subject_token, target)
         hit = self.cache.get(key)
         if hit and hit.expires_at > now:
             return hit
-        ex = await self._exchange(subject_token, now)
+        form = {"target": target} if target else {}
+        form.update(extra or {})
+        ex = await self._exchange(subject_token, now, form)
         cache_until = ex.expires_at - CACHE_SKEW
         if subject_exp is not None:
             cache_until = min(cache_until, float(subject_exp) - CACHE_SKEW)
@@ -97,9 +114,10 @@ class Exchanger:
             self.cache[key] = Exchanged(ex.access_token, ex.son_mcp_url, cache_until)
         return ex
 
-    async def _exchange(self, subject_token: str, now: float) -> Exchanged:
+    async def _exchange(self, subject_token: str, now: float, extra: dict[str, str] | None = None) -> Exchanged:
         self.calls += 1
         form = {"grant_type": GRANT_TYPE, "subject_token": subject_token, "subject_token_type": ACCESS_TOKEN_TYPE}
+        form.update(extra or {})
         try:
             r = await self.client.post(self.token_url, data=form, headers={"Accept": "application/json"}, timeout=10)
         except httpx.HTTPError as e:
@@ -113,6 +131,8 @@ class Exchanger:
             log.info("token exchange refused: status=%s error=%s", r.status_code, err)
             if r.status_code in (400, 401) and err in ("invalid_grant", "invalid_token"):
                 raise InvalidGrant(str(body.get("error_description") or err))
+            if err == "invalid_target" and extra and "target" in extra:
+                raise InvalidTarget(str(body.get("error_description") or err))
             raise ExchangeError(f"token endpoint answered {r.status_code}")
         if not isinstance(body, dict):
             raise ExchangeError("token endpoint answered non-JSON")

@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+### relay: multiple boxes per connection
+- `RELAY_MULTI_BOX=on` turns the relay into its own MCP server over every box in the connection. Each box tool gets a `box` argument; each call is exchanged for a short token for that one box. Off by default.
+- New relay tools: `boxes_list`, `kanban_list`, `kanban_read`, `memory_read` (one box or `all`) and `calendar_post` (adds a post for review, never publishes). See docs/RELAY.md, Multiple boxes.
+
 ## v0.1.9 (2026-11-08): coordinator briefs, team board, model controls
 Claude plugin 0.1.9 (re-validate in the Claude directory) and ChatGPT package 0.1.9 (new ZIP from the `v0.1.9` tag).
 
