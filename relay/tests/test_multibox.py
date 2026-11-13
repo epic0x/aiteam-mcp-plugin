@@ -74,6 +74,7 @@ class World:
         self.targets_calls, self.exchanges, self.proxied = [], [], []
         self.exchange_reply = None
         self.targets_status = 200
+        self.targets_raise = None  # an httpx error class: /oauth/targets unreachable
         self.seq = 0
         self.issued = {}  # box host -> set of valid tokens
         self.dead = set()  # box hosts that refuse connections
@@ -105,6 +106,8 @@ class World:
     def site(self, req: httpx.Request):
         if req.url.path == "/oauth/targets":
             self.targets_calls.append(req.headers.get("authorization"))
+            if self.targets_raise:
+                raise self.targets_raise("targets down")
             if self.targets_status != 200:
                 return httpx.Response(self.targets_status, json={"error": "invalid_grant"} if
                                       self.targets_status == 401 else {"error": "x"})
@@ -440,6 +443,51 @@ async def test_v1_grant_without_targets_endpoint(world, clock, monkeypatch):
     async with relay(world, clock, monkeypatch) as app, session(app, mint()) as s:
         r = await s.call_tool("only_a", {})
     assert not r.isError and world.a.calls == [("only_a", {})]
+
+
+V1_TARGETS_FAILURES = [("missing", 404, None), ("server error", 500, None), ("bad gateway", 502, None),
+                       ("refused", 401, None), ("unreachable", 200, httpx.ConnectError),
+                       ("timeout", 200, httpx.ReadTimeout)]
+
+
+@pytest.mark.parametrize("why,status,exc", V1_TARGETS_FAILURES, ids=[f[0] for f in V1_TARGETS_FAILURES])
+async def test_v1_grant_survives_any_targets_failure(world, clock, monkeypatch, why, status, exc):
+    # A single-box grant must keep working whatever /oauth/targets does: it never needed it.
+    world.targets_status, world.targets_raise = status, exc
+    world.targets = [world.targets[0]]
+    async with relay(world, clock, monkeypatch) as app, session(app, mint()) as s:
+        names = {t.name for t in (await s.list_tools()).tools}
+        r = await s.call_tool("only_a", {})
+    assert world.targets_calls, "the relay asked for targets first"
+    assert "only_a" in names and not r.isError and world.a.calls == [("only_a", {})]
+    assert world.exchanges and all("target" not in e for e in world.exchanges)  # today's exchange form
+
+
+async def test_v1_grant_revoked_is_still_401_when_targets_fails(world, clock, monkeypatch):
+    world.targets_status = 500
+    world.exchange_reply = lambda form: httpx.Response(400, json={"error": "invalid_grant",
+                                                                  "error_description": "grant revoked"})
+    async with relay(world, clock, monkeypatch) as app:
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="https://mcp.aiteam.space") as c:
+            r = await c.post("/mcp", json={"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}},
+                             headers={"authorization": f"Bearer {mint()}",
+                                      "accept": "application/json, text/event-stream"})
+    assert r.status_code == 401 and 'error="invalid_token"' in r.headers["www-authenticate"]
+    assert not all_box_auth(world)
+
+
+@pytest.mark.parametrize("grant", ["v2", "v3"])
+@pytest.mark.parametrize("status,exc", [(500, None), (404, None), (200, httpx.ConnectError)])
+async def test_scoped_grant_fails_closed_when_targets_fails(world, clock, monkeypatch, grant, status, exc):
+    world.targets_status, world.targets_raise = status, exc
+    tok = V3() if grant == "v3" else mint(son_id=None, grant_v=2, son_ids=[SON_A, SON_B])
+    async with relay(world, clock, monkeypatch) as app:
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="https://mcp.aiteam.space") as c:
+            r = await c.post("/mcp", json={"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}},
+                             headers={"authorization": f"Bearer {tok}",
+                                      "accept": "application/json, text/event-stream"})
+    assert r.status_code == 502 and r.json()["error"] == "bad_gateway"
+    assert world.exchanges == [] and not all_box_auth(world)  # nothing guessed, no box reached
 
 
 async def test_flag_off_is_the_old_proxy(world, clock, monkeypatch):

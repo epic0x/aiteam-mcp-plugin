@@ -29,8 +29,8 @@ from mcp.server.lowlevel import Server
 
 from . import __version__
 from .boxes import BoxError, BoxPool, raw_call
-from .exchange import Exchanger, InvalidGrant
-from .targets import Target, Targets, TargetsClient, TargetsMissing
+from .exchange import ExchangeError, Exchanger, InvalidGrant
+from .targets import Target, Targets, TargetsClient
 
 log = logging.getLogger("aiteam_relay.multibox")
 
@@ -235,10 +235,13 @@ class Router:
     async def targets(self, c: Caller) -> Targets:
         try:
             return await self.targets_client.get(c.token, c.exp)
-        except TargetsMissing:
+        except (InvalidGrant, ExchangeError) as e:
+            # Scoped grants (v2, v3) only exist through /oauth/targets: fail closed.
             if not c.legacy:
                 raise
-        # aiteam.space without /oauth/targets yet: a single-box grant still works through today's exchange.
+            log.info("targets unavailable for a single-box grant (%s); using the plain exchange", type(e).__name__)
+        # A single-box grant never needs /oauth/targets: missing, refusing or down, it keeps today's exchange. A revoked
+        # grant is still refused there (InvalidGrant from the exchange, a 401 to the client).
         ex = await self.exchanger.get(c.token, c.exp)
         label = (urlsplit(ex.son_mcp_url).hostname or "box").split(".")[0]
         kind = "node" if c.claims.get("node_id") and not c.claims.get("son_id") else "son"
