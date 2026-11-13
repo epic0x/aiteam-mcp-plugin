@@ -115,7 +115,9 @@ Spotify (`spotify_*`), A2A (`a2a_*`), computer use, Feishu, connectors (`manage_
    through the public URL and prints PASS/FAIL for each.
 
 Config (`hermes config set`): `mcp.toolbox.enabled` (default true), `mcp.toolbox.exclude` (tool names to hide;
-default empty = full parity).
+default empty = full parity), `mcp.toolbox.allow` (tool names; when set, only these are exposed and every other tool
+is hidden and refused, `exclude` still applies on top). Example for a host that must not offer a shell or files:
+`hermes config set mcp.toolbox.allow '["cronjob_manage"]'`. `hermes_toolbox_status` shows the list in force.
 
 ## Safety
 

@@ -24,7 +24,8 @@ How it works
     else to ask.
 
 Config (``hermes config set``): ``mcp.toolbox.enabled`` (default true), ``mcp.toolbox.exclude``
-(list of tool names to hide; default empty: full parity). Hooked in the same way as
+(list of tool names to hide; default empty: full parity), ``mcp.toolbox.allow`` (list of tool names: when set,
+only these are exposed and every other tool is hidden and refused; ``exclude`` still applies on top). Hooked in the same way as
 ``mcp_session_tools`` (one ``register(mcp)`` call at the end of ``create_mcp_server``).
 """
 from __future__ import annotations
@@ -72,8 +73,10 @@ def _config() -> Dict[str, Any]:
 class Toolbox:
     """Lazy, thread-safe wrapper around the Hermes tool registry for one MCP server process."""
 
-    def __init__(self, exclude: Optional[List[str]] = None):
+    def __init__(self, exclude: Optional[List[str]] = None, allow: Optional[List[str]] = None):
         self.exclude = set(exclude or []) | NOT_EXPOSED
+        # None = full parity; a list = only these names (an empty list exposes nothing but the status tool)
+        self.allow = None if allow is None else {str(n) for n in allow}
         self._lock = threading.RLock()
         self._defs: Optional[List[Dict[str, Any]]] = None
         self._mem_store = None
@@ -99,7 +102,7 @@ class Toolbox:
         for d in defs:
             fn = d.get("function") or d
             n = fn.get("name")
-            if not n or n in seen or n in self.exclude:
+            if not n or n in seen or self._hidden(n):
                 continue
             seen.add(n)
             out.append({"name": n, "description": fn.get("description") or "",
@@ -107,7 +110,7 @@ class Toolbox:
         # memory-provider tools (mnemosyne_* etc.) live on the provider, not the registry
         for s in self._memory_provider_schemas():
             n = s.get("name")
-            if n and n not in seen and n not in self.exclude:
+            if n and n not in seen and not self._hidden(n):
                 seen.add(n)
                 self._mem_tools.add(n)
                 out.append({"name": n, "description": s.get("description") or "",
@@ -117,7 +120,7 @@ class Toolbox:
         try:
             from tools.registry import registry
             for n in SESSION_GATED:
-                if n in seen or n in self.exclude:
+                if n in seen or self._hidden(n):
                     continue
                 sch = registry.get_schema(n)
                 if sch:
@@ -129,11 +132,14 @@ class Toolbox:
         avail = {d["name"] for d in out}
         try:
             for n in sorted(model_tools.get_all_tool_names()):
-                if n not in avail and n not in self.exclude:
+                if n not in avail and not self._hidden(n):
                     self._unavailable[n] = "not enabled on this box (missing key, binary or platform)"
         except Exception:
             pass
         return out
+
+    def _hidden(self, name: str) -> bool:
+        return name in self.exclude or (self.allow is not None and name not in self.allow)
 
     def definitions(self) -> List[Dict[str, Any]]:
         with self._lock:
@@ -211,7 +217,7 @@ class Toolbox:
     def call(self, name: str, args: Dict[str, Any]) -> str:
         if name == "hermes_toolbox_status":
             return json.dumps(self.status(), indent=1)
-        if name in self.exclude:
+        if self._hidden(name):
             return json.dumps({"error": f"{name} is not exposed over MCP on this box"})
         if name in AGENT_LOOP:
             return self._agent_loop(name, args)
@@ -250,7 +256,8 @@ class Toolbox:
     def status(self) -> Dict[str, Any]:
         defs = self.definitions()
         return {"exposed": sorted(d["name"] for d in defs), "exposed_count": len(defs),
-                "not_available_on_this_box": self._unavailable, "hidden_by_config": sorted(self.exclude)}
+                "not_available_on_this_box": self._unavailable, "hidden_by_config": sorted(self.exclude),
+                "allow_list": None if self.allow is None else sorted(self.allow)}
 
 
 def _status_def() -> Dict[str, Any]:
@@ -272,7 +279,11 @@ def register(mcp, toolbox: Optional[Toolbox] = None) -> List[str]:
     cfg = _config()
     if cfg.get("enabled") is False:
         return []
-    tb = toolbox or Toolbox(cfg.get("exclude") or [])
+    allow = cfg.get("allow")
+    if allow is not None and not isinstance(allow, list):
+        logger.warning("mcp.toolbox.allow must be a list of tool names; exposing nothing until it is fixed")
+        allow = []
+    tb = toolbox or Toolbox(cfg.get("exclude") or [], allow)
     try:
         defs = tb.definitions()
     except Exception:
