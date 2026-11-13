@@ -6,6 +6,7 @@ address (`safe_son_url`); a target that fails it is never called and shows up in
 """
 from __future__ import annotations
 
+import asyncio
 import logging
 import re
 import time
@@ -122,6 +123,7 @@ class TargetsClient:
         self.clock, self.ttl, self.timeout = clock, ttl, timeout
         self.cache: dict[str, Targets] = {}
         self.calls = 0
+        self._inflight: dict[str, asyncio.Task] = {}  # one GET per token at a time: concurrent requests join it
 
     def drop(self, subject_token: str) -> None:
         self.cache.pop(token_key(subject_token), None)
@@ -132,7 +134,22 @@ class TargetsClient:
         hit = self.cache.get(key)
         if hit and hit.expires_at > now:
             return hit
+        task = self._inflight.get(key)
+        if task is None:
+            task = self._inflight[key] = asyncio.get_running_loop().create_task(
+                self._load(key, subject_token, subject_exp))
+
+            def done(t: asyncio.Task, k: str = key) -> None:
+                if self._inflight.get(k) is t:
+                    del self._inflight[k]
+                if not t.cancelled():
+                    t.exception()  # retrieved, so a load whose callers all left logs nothing
+            task.add_done_callback(done)
+        return await asyncio.shield(task)
+
+    async def _load(self, key: str, subject_token: str, subject_exp: float | None) -> Targets:
         got = await self._fetch(subject_token)
+        now = self.clock()
         got.expires_at = now + self.ttl
         if subject_exp is not None:
             got.expires_at = min(got.expires_at, float(subject_exp))
