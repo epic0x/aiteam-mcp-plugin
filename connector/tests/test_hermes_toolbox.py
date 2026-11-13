@@ -103,3 +103,39 @@ def test_disabled_registers_nothing(toolbox, monkeypatch):
     tb, _, _ = toolbox
     monkeypatch.setattr(tb, "_config", lambda: {"enabled": False})
     assert tb.register(FakeServer()) == []
+
+
+def test_allow_list_exposes_only_named_tools_and_refuses_the_rest(toolbox, monkeypatch):
+    tb, calls, _ = toolbox
+    monkeypatch.setattr(tb, "_config", lambda: {"allow": ["cronjob_manage", "read_file"]})
+    srv = FakeServer()
+    names = tb.register(srv)
+    assert set(names) == {"cronjob_manage", "read_file", "hermes_toolbox_status"}
+    listed = {t.name for t in asyncio.run(srv.list_tools())}
+    assert "terminal" not in listed
+    # a hidden tool is refused even when called by name, and never reaches Hermes
+    r = asyncio.run(srv.call_tool("terminal", {"command": "id"}))
+    assert r == "orig:terminal"  # not ours: falls through to the stock server, which does not know it
+    assert calls == []
+    tbx = tb.Toolbox(allow=["cronjob_manage"])
+    assert "not exposed" in tbx.call("terminal", {"command": "id"}) and calls == []
+    st = json.loads(asyncio.run(srv.call_tool("hermes_toolbox_status", {})).content[0].text)
+    assert st["allow_list"] == ["cronjob_manage", "read_file"] and "terminal" not in st["not_available_on_this_box"]
+
+
+def test_allow_list_and_exclude_together(toolbox, monkeypatch):
+    tb, _, _ = toolbox
+    monkeypatch.setattr(tb, "_config", lambda: {"allow": ["terminal", "read_file"], "exclude": ["terminal"]})
+    assert set(tb.register(FakeServer())) == {"read_file", "hermes_toolbox_status"}
+
+
+def test_allow_list_not_a_list_exposes_nothing(toolbox, monkeypatch):
+    tb, _, _ = toolbox
+    monkeypatch.setattr(tb, "_config", lambda: {"allow": "cronjob_manage"})
+    assert tb.register(FakeServer()) == ["hermes_toolbox_status"]
+
+
+def test_no_allow_list_keeps_full_parity(toolbox, monkeypatch):
+    tb, _, _ = toolbox
+    monkeypatch.setattr(tb, "_config", lambda: {})
+    assert {"terminal", "read_file", "cronjob_manage"} <= set(tb.register(FakeServer()))
