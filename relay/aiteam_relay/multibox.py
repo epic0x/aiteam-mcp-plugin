@@ -245,8 +245,13 @@ def cap_rows(rows: list[dict], limit: int = MAX_FANOUT_BYTES) -> tuple[list[dict
 
 class Router:
     def __init__(self, targets: TargetsClient, exchanger: Exchanger, pool: BoxPool, *,
-                 clock: Callable[[], float] = time.time) -> None:
+                 clock: Callable[[], float] = time.time, code_mode: bool = False,
+                 code_mode_opts: dict | None = None) -> None:
         self.targets_client, self.exchanger, self.pool, self.clock = targets, exchanger, pool, clock
+        self.code = None
+        if code_mode:
+            from .codemode import CodeMode
+            self.code = CodeMode(self, **(code_mode_opts or {}))
 
     async def targets(self, c: Caller) -> Targets:
         try:
@@ -301,6 +306,10 @@ class Router:
             log.info("tools/list: last good list served for %s", ",".join(stale)[:500])
         keys = t.keys
         out = native_tools(t, self.pool.fanout_timeout)
+        if self.code is not None:
+            from .codemode import CODE_TOOLS, code_tools
+            out += code_tools()
+            by_name = {k: v for k, v in by_name.items() if k not in CODE_TOOLS}
         for name in sorted(by_name):
             rows = by_name[name]
             base = rows[0][1]
@@ -326,6 +335,8 @@ class Router:
         t = await self.targets(c)
         if name == "boxes_list":
             return await self.boxes_list(c, t)
+        if self.code is not None and name in ("search", "describe", "execute"):
+            return await self.code.call(c, t, name, args)
         if name in FANOUT_TOOLS:
             return await self.fan_tool(c, t, name, args)
         if name == "calendar_post":

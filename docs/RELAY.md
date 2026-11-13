@@ -151,6 +151,34 @@ their single-box claims for up to an hour, but aiteam.space now needs `target` o
 The relay follows the `grant_v` that `GET /oauth/targets` reports, not the token's claims, so those tokens get
 `target=<box id>` and reach every box of the widened connection. With `RELAY_MULTI_BOX=off` (the default) the relay is the plain stream proxy described above.
 
+## Code Mode
+`RELAY_CODE_MODE=on` (needs `RELAY_MULTI_BOX=on`, off by default) adds three tools, so a client can do many steps in
+one call instead of loading every box tool:
+
+- `search(query)`: API methods and box tools that match the words, one line each.
+- `describe(names)`: the full input of the methods (`kanban.list`) or box tools (`box-a/only_a`) named.
+- `execute(code)`: runs one JavaScript snippet, the body of an async function, and returns only what it returns.
+
+API inside a snippet (one object argument each): `boxes.list`, `boxes.health`, `tools.list`, `tools.call`,
+`kanban.list`, `kanban.read`, `memory.read`, plus `console.log`.
+
+### How a snippet runs
+- In `relay/sandbox/runner.mjs`: a QuickJS interpreter (WebAssembly) inside a Node process started with
+  `--permission` (reads only its own folder; no network, writes, child processes or workers), no string `eval` in the
+  host, and an empty environment. No tokens or settings ever enter it.
+- Every API call goes back to the relay and runs like a plain tool call: the connection's boxes are read live, the
+  box must be one of them, and the call uses that box's own exchanged token.
+- `tools.call` runs read-only tools only. Anything that changes something answers "needs approval" and has to be
+  called as a plain tool, where the box's own approval rules apply. A loop can't get past this.
+
+### Limits per run
+50 API calls, 10 s of CPU, 60 s in total (waiting on boxes included), 32 MB of memory, 256 KB result, 200 log lines,
+20,000 characters of code, 4 runs at once per relay.
+
+### Setup
+`cd relay/sandbox && npm ci` (Node 22 or later). `RELAY_NODE` points at another `node`; `RELAY_SANDBOX_DIR` at another
+copy of the folder.
+
 ## Run
 ```
 uv venv -p 3.12 .venv && . .venv/bin/activate

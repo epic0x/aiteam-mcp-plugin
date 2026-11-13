@@ -63,6 +63,8 @@ class Settings:
     fanout_timeout: float = field(default_factory=lambda: _seconds("RELAY_FANOUT_TIMEOUT", 10.0))
     list_timeout: float = field(default_factory=lambda: _seconds("RELAY_LIST_TIMEOUT", 25.0))
     tools_ttl: float = field(default_factory=lambda: _seconds("RELAY_TOOLS_TTL", 300.0))
+    # Code Mode (codemode.py): search / describe / execute on top of the multi-box relay. Needs multi_box.
+    code_mode: bool = field(default_factory=lambda: _env("RELAY_CODE_MODE", "off").lower() in ("on", "1", "true"))
 
     @property
     def resource(self) -> str:
@@ -90,7 +92,8 @@ class Settings:
 
 def create_app(settings: Settings | None = None, *, client: httpx.AsyncClient | None = None,
                jwks=None, box_transport: httpx.AsyncBaseTransport | None = None,
-               clock: Callable[[], float] = time.time, box_timeout: float | None = None) -> Starlette:
+               clock: Callable[[], float] = time.time, box_timeout: float | None = None,
+               code_mode_opts: dict | None = None) -> Starlette:
     """`box_transport` / `clock` / `box_timeout` exist for tests (multi-box mode only). `box_timeout` sets the box,
     fan-out and tools/list limits at once; without it they come from Settings."""
     s = settings or Settings()
@@ -114,7 +117,7 @@ def create_app(settings: Settings | None = None, *, client: httpx.AsyncClient | 
         else:
             limits = dict(box_timeout=box_timeout, fanout_timeout=box_timeout, list_timeout=box_timeout)
         pool = BoxPool(exchanger, transport=box_transport, clock=clock, tools_ttl=s.tools_ttl, **limits)
-        router = Router(targets, exchanger, pool, clock=clock)
+        router = Router(targets, exchanger, pool, clock=clock, code_mode=s.code_mode, code_mode_opts=code_mode_opts)
         # Stateless: every HTTP request is authenticated and scoped on its own; no MCP session outlives a request.
         multi = StreamableHTTPSessionManager(app=build_server(router), json_response=False, stateless=True)
 
