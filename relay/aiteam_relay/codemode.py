@@ -252,7 +252,8 @@ class CodeMode:
         return await self.execute(c, args)
 
     async def _box_tools(self, c: "Caller", t: "Targets") -> list[tuple["Target", types.Tool]]:
-        got = await self.router.pool.fan_out(t.targets, lambda x: self.router.pool.tools(c.token, c.exp, x, c.legacy))
+        plain = c.plain_exchange(t)
+        got = await self.router.pool.fan_out(t.targets, lambda x: self.router.pool.tools(c.token, c.exp, x, plain, c.cache_id))
         return [(x, tl) for x, res in got if not isinstance(res, BaseException) for tl in res]
 
     async def search(self, c: "Caller", t: "Targets", args: dict) -> types.CallToolResult:
@@ -315,33 +316,34 @@ class CodeMode:
         if target is None:
             raise BoxError("box not in this connection" if box else "box is required")
         pool = self.router.pool
+        plain = c.plain_exchange(t)
         if name == "boxes.health":
-            tools = await pool.tools(c.token, c.exp, target, c.legacy)
+            tools = await pool.tools(c.token, c.exp, target, plain, c.cache_id)
             if any(tl.name == "box_health" for tl in tools):
-                return await self.router._call_data(c, target, "box_health", {})
-            await pool.run(c.token, c.exp, target, c.legacy, lambda s: s.send_ping(), timeout=pool.box_timeout)
+                return await self.router._call_data(c, plain, target, "box_health", {})
+            await pool.run(c.token, c.exp, target, plain, lambda s: s.send_ping(), timeout=pool.box_timeout)
             return {"ok": True, "note": "this box has no box_health tool yet"}
         if name == "tools.list":
-            tools = await pool.tools(c.token, c.exp, target, c.legacy)
+            tools = await pool.tools(c.token, c.exp, target, plain, c.cache_id)
             return [{"name": tl.name, "description": (tl.description or "").split("\n")[0][:160],
                      "read_only": bool(tl.annotations and tl.annotations.readOnlyHint)} for tl in tools]
         if name == "tools.call":
             tool, targs = args.get("name"), args.get("args") or {}
             if not isinstance(tool, str) or not isinstance(targs, dict):
                 raise BoxError("tools.call needs { box, name, args: {...} }")
-            tools = {tl.name: tl for tl in await pool.tools(c.token, c.exp, target, c.legacy)}
+            tools = {tl.name: tl for tl in await pool.tools(c.token, c.exp, target, plain, c.cache_id)}
             tl = tools.get(tool)
             if tl is None:
                 raise BoxError(f"{tool} is not available on {target.key}")
             if not (tl.annotations and tl.annotations.readOnlyHint):
                 raise BoxError(NEEDS_APPROVAL)
-            return await self.router._call_data(c, target, tool, targs)
+            return await self.router._call_data(c, plain, target, tool, targs)
         tool = {"kanban.list": "kanban_list", "kanban.read": "kanban_read", "memory.read": "memory_read"}[name]
         fwd = {k: v for k, v in args.items() if k != "box"}
-        tools = await pool.tools(c.token, c.exp, target, c.legacy)
+        tools = await pool.tools(c.token, c.exp, target, plain, c.cache_id)
         if not any(tl.name == tool for tl in tools):
             raise BoxError(f"{tool} is not available on {target.key}")
-        return await self.router._call_data(c, target, tool, fwd)
+        return await self.router._call_data(c, plain, target, tool, fwd)
 
     # ------------------------------------------------------------------ execute
     async def execute(self, c: "Caller", args: dict) -> types.CallToolResult:
