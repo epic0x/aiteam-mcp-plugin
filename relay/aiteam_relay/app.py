@@ -87,6 +87,8 @@ class Settings:
     exchange_timeout: float = field(default_factory=lambda: _seconds("RELAY_EXCHANGE_TIMEOUT", 25.0, 120))
     # Code Mode (codemode.py): search / describe / execute on top of the multi-box relay. Needs multi_box.
     code_mode: bool = field(default_factory=lambda: _env("RELAY_CODE_MODE", "off").lower() in ("on", "1", "true"))
+    # extra headers on the relay's own calls to the issuer only (issuer_headers.py); unset = off
+    issuer_headers_file: str = field(default_factory=lambda: os.environ.get("RELAY_ISSUER_HEADERS_FILE", "").strip())
 
     @property
     def resource(self) -> str:
@@ -122,6 +124,9 @@ def create_app(settings: Settings | None = None, *, client: httpx.AsyncClient | 
     http = client or httpx.AsyncClient(timeout=httpx.Timeout(connect=10, read=None, write=30, pool=10),
                                        headers={"user-agent": f"aiteam-relay/{__version__}"},
                                        follow_redirects=False)
+    if s.issuer_headers_file:  # a bad file stops the start (IssuerHeadersError), it never runs half set up
+        from . import issuer_headers
+        issuer_headers.install(http, s.issuer, issuer_headers.load(s.issuer_headers_file))
     keys = jwks or Jwks(s.issuer + "/oauth/jwks", http)
     exchanger = Exchanger(http, token_url=s.issuer + "/oauth/token", suffix=s.son_host_suffix,
                           relay_host=s.relay_host, clock=clock, concurrency=s.exchange_concurrency,

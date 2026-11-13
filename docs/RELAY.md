@@ -72,9 +72,36 @@ Logs: no tokens, no full upstream URLs (only the Son host name). The `httpx` log
 | `RELAY_CODE_MODE` | `off` | `on` = add `search`, `describe` and `execute` (needs `RELAY_MULTI_BOX=on`; see Code Mode) |
 | `RELAY_NODE` | `node` on `PATH` | Code Mode: the Node 25+ binary that runs the sandbox |
 | `RELAY_SANDBOX_DIR` | `relay/sandbox` | Code Mode: the sandbox folder (after `npm ci`); the only folder the sandbox may read |
+| `RELAY_ISSUER_HEADERS_FILE` | unset (off) | file of extra headers for the relay's own calls to the issuer only, for an issuer behind an access gate (see Issuer behind an access gate) |
 
 Time values are seconds (decimals allowed), above 0 and at most 3600. Anything else keeps the default and logs a
 warning. The same goes for an exchange slot count outside 1 to 64 and `RELAY_EXCHANGE_TIMEOUT` above 120.
+
+### Issuer behind an access gate
+For an issuer that sits behind an access gate wanting a service token on every request (a staging site, for
+example), the relay can add the gate's headers to its own calls to the issuer. Off unless
+`RELAY_ISSUER_HEADERS_FILE` is set; production runs without it.
+
+1. Put the service token in a file only the relay's user can read:
+
+   ```
+   CF-Access-Client-Id: <client id>
+   CF-Access-Client-Secret: <client secret>
+   ```
+
+   `chmod 600` it. Blank lines and lines starting with `#` are skipped.
+2. Set `RELAY_ISSUER_HEADERS_FILE` to its path and restart the relay. The log says
+   `issuer headers on for <issuer> (CF-Access-Client-Id, CF-Access-Client-Secret)`, with names only.
+
+Where the headers go:
+- Only the issuer's own origin (`AITEAM_ISSUER`: same scheme, host and port), only `/oauth/token`, `/oauth/targets`
+  and `/oauth/jwks`.
+- Never to a box, never to any other path or host, never on a redirect (the relay follows none). A header with one of
+  those names on any other request is removed, even one a client sent.
+
+The relay refuses to start, and says why without the value, when the file is missing, is a symlink or not a plain file, can be
+read by group or others, names any other header, or has an empty value. Use a service token made for the relay
+alone, so it can be revoked on its own.
 
 ## Multiple boxes
 
