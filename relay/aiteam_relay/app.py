@@ -31,6 +31,21 @@ def _env(name: str, default: str) -> str:
     return v or default
 
 
+def _seconds(name: str, default: float) -> float:
+    """A positive number of seconds from the environment; anything else keeps the default."""
+    raw = os.environ.get(name, "").strip()
+    if not raw:
+        return default
+    try:
+        v = float(raw)
+    except ValueError:
+        v = 0.0
+    if not 0 < v <= 3600:
+        log.warning("%s=%r is not a number of seconds between 0 and 3600; using %g", name, raw[:20], default)
+        return default
+    return v
+
+
 @dataclass
 class Settings:
     public_url: str = field(default_factory=lambda: _env("RELAY_PUBLIC_URL", "https://mcp.aiteam.space").rstrip("/"))
@@ -42,6 +57,12 @@ class Settings:
     challenge_file: str = field(default_factory=lambda: os.environ.get("OPENAI_APPS_CHALLENGE_FILE", ""))
     # on = the relay is its own MCP server over every box of the grant (multibox.py); off = one-box stream proxy
     multi_box: bool = field(default_factory=lambda: _env("RELAY_MULTI_BOX", "off").lower() in ("on", "1", "true"))
+    # multi-box time limits, seconds (docs/RELAY.md, Multiple boxes > Limits)
+    box_timeout: float = field(default_factory=lambda: _seconds("RELAY_BOX_TIMEOUT", 30.0))
+    targets_timeout: float = field(default_factory=lambda: _seconds("RELAY_TARGETS_TIMEOUT", 15.0))
+    fanout_timeout: float = field(default_factory=lambda: _seconds("RELAY_FANOUT_TIMEOUT", 10.0))
+    list_timeout: float = field(default_factory=lambda: _seconds("RELAY_LIST_TIMEOUT", 25.0))
+    tools_ttl: float = field(default_factory=lambda: _seconds("RELAY_TOOLS_TTL", 300.0))
 
     @property
     def resource(self) -> str:
@@ -70,7 +91,8 @@ class Settings:
 def create_app(settings: Settings | None = None, *, client: httpx.AsyncClient | None = None,
                jwks=None, box_transport: httpx.AsyncBaseTransport | None = None,
                clock: Callable[[], float] = time.time, box_timeout: float | None = None) -> Starlette:
-    """`box_transport` / `clock` / `box_timeout` exist for tests (multi-box mode only)."""
+    """`box_transport` / `clock` / `box_timeout` exist for tests (multi-box mode only). `box_timeout` sets the box,
+    fan-out and tools/list limits at once; without it they come from Settings."""
     s = settings or Settings()
     http = client or httpx.AsyncClient(timeout=httpx.Timeout(connect=10, read=None, write=30, pool=10),
                                        headers={"user-agent": f"aiteam-relay/{__version__}"},
@@ -82,13 +104,16 @@ def create_app(settings: Settings | None = None, *, client: httpx.AsyncClient | 
     if s.multi_box:
         from mcp.server.streamable_http_manager import StreamableHTTPSessionManager
 
-        from .boxes import BOX_TIMEOUT, BoxPool
+        from .boxes import BoxPool
         from .multibox import Router, build_server
         from .targets import TargetsClient
         targets = TargetsClient(http, url=s.issuer + "/oauth/targets", suffix=s.son_host_suffix,
-                                relay_host=s.relay_host, clock=clock)
-        pool = BoxPool(exchanger, transport=box_transport, clock=clock,
-                       box_timeout=BOX_TIMEOUT if box_timeout is None else box_timeout)
+                                relay_host=s.relay_host, clock=clock, timeout=s.targets_timeout)
+        if box_timeout is None:
+            limits = dict(box_timeout=s.box_timeout, fanout_timeout=s.fanout_timeout, list_timeout=s.list_timeout)
+        else:
+            limits = dict(box_timeout=box_timeout, fanout_timeout=box_timeout, list_timeout=box_timeout)
+        pool = BoxPool(exchanger, transport=box_transport, clock=clock, tools_ttl=s.tools_ttl, **limits)
         router = Router(targets, exchanger, pool, clock=clock)
         # Stateless: every HTTP request is authenticated and scoped on its own; no MCP session outlives a request.
         multi = StreamableHTTPSessionManager(app=build_server(router), json_response=False, stateless=True)
@@ -162,6 +187,7 @@ def create_app(settings: Settings | None = None, *, client: httpx.AsyncClient | 
         async with contextlib.AsyncExitStack() as stack:
             if multi is not None:
                 await stack.enter_async_context(multi.run())
+                stack.push_async_callback(pool.tools_cache.aclose)
             yield
         if client is None:
             await http.aclose()
@@ -169,6 +195,8 @@ def create_app(settings: Settings | None = None, *, client: httpx.AsyncClient | 
     app = Starlette(routes=routes, lifespan=lifespan)
     app.router.redirect_slashes = False
     app.state.settings, app.state.exchanger, app.state.http = s, exchanger, http
+    if multi is not None:
+        app.state.pool, app.state.targets = pool, targets
     return app
 
 

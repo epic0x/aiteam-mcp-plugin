@@ -43,12 +43,15 @@ class FakeBox:
         self.name, self.tools = name, tools  # tools: {name: (annotations, handler(args) -> dict)}
         self.calls, self.auth_seen = [], []
         self.slow = 0.0
+        self.init_delay = 0.0  # seconds before answering MCP initialize
+        self.list_delay = 0.0  # seconds before answering tools/list
+        self.lists = 0  # tools/list requests received over HTTP
         self.server = Server(name)
 
         @self.server.list_tools()
         async def _list():
-            if self.slow:
-                await asyncio.sleep(self.slow)
+            if self.slow or self.list_delay:
+                await asyncio.sleep(self.slow or self.list_delay)
             return [types.Tool(name=n, description=f"{n} on {name}", annotations=a,
                                inputSchema={"type": "object", "properties": {"x": {"type": "string"}}})
                     for n, (a, _) in self.tools.items()]
@@ -75,6 +78,9 @@ class World:
         self.exchange_reply = None
         self.targets_status = 200
         self.targets_raise = None  # an httpx error class: /oauth/targets unreachable
+        self.targets_timeouts = []  # the read timeout the relay set on each GET /oauth/targets
+        self.grant_v = None  # set: /oauth/targets says so, and a v2/v3 grant needs `target` (as on aiteam.space)
+        self.exchange_delay = 0.0  # seconds before each token exchange answers
         self.seq = 0
         self.issued = {}  # box host -> set of valid tokens
         self.dead = set()  # box hosts that refuse connections
@@ -103,18 +109,27 @@ class World:
                       "calendar-team.aiteam.space": self.cal}
 
     # aiteam.space
-    def site(self, req: httpx.Request):
+    async def site(self, req: httpx.Request):
         if req.url.path == "/oauth/targets":
             self.targets_calls.append(req.headers.get("authorization"))
+            self.targets_timeouts.append((req.extensions.get("timeout") or {}).get("read"))
             if self.targets_raise:
                 raise self.targets_raise("targets down")
             if self.targets_status != 200:
                 return httpx.Response(self.targets_status, json={"error": "invalid_grant"} if
                                       self.targets_status == 401 else {"error": "x"})
-            return httpx.Response(200, json={"targets": self.targets, "scope_rule": "all"})
+            body = {"targets": self.targets, "scope_rule": "all"}
+            if self.grant_v is not None:
+                body["grant_v"] = self.grant_v
+            return httpx.Response(200, json=body)
         if req.url.path == "/oauth/token":
             form = {k: v[0] for k, v in parse_qs(req.content.decode()).items()}
             self.exchanges.append(form)
+            if self.exchange_delay:
+                await asyncio.sleep(self.exchange_delay)
+            if self.grant_v in (2, 3) and not form.get("target"):
+                # the grant row decides, not the token's claims (exchangeScope / the v2 branch of exchangeRelayToken)
+                return httpx.Response(400, json={"error": "invalid_target", "error_description": "target is required"})
             if self.exchange_reply:
                 r = self.exchange_reply(form)
                 if r is not None:
@@ -145,6 +160,19 @@ class World:
             self.reject_next.discard(host)
             await send({"type": "http.response.start", "status": 401, "headers": [(b"content-type", b"text/plain")]})
             await send({"type": "http.response.body", "body": b"no"})
+            return
+        if scope.get("method") == "POST":
+            first = await receive()
+            body = first.get("body", b"")
+            if b'"tools/list"' in body:
+                box.lists += 1  # a tools/list request from the relay (the SDK also calls _list itself on calls)
+            if box.init_delay and b'"initialize"' in body:
+                await asyncio.sleep(box.init_delay)
+            queued = [first]
+
+            async def replay():
+                return queued.pop() if queued else await receive()
+            await box.mgr.handle_request(scope, replay, send)
             return
         await box.mgr.handle_request(scope, receive, send)
 
@@ -178,11 +206,18 @@ def clock():
     return Clock()
 
 
+TIMEOUT_ENV = ("RELAY_BOX_TIMEOUT", "RELAY_TARGETS_TIMEOUT", "RELAY_FANOUT_TIMEOUT", "RELAY_LIST_TIMEOUT",
+               "RELAY_TOOLS_TTL")
+
+
 @contextlib.asynccontextmanager
-async def relay(world, clock, monkeypatch, *, box_timeout=2.0, multi="on"):
-    for k in ("RELAY_PUBLIC_URL", "AITEAM_ISSUER", "RELAY_MULTI_BOX"):
+async def relay(world, clock, monkeypatch, *, box_timeout=2.0, multi="on", env=None):
+    """box_timeout=None: every limit comes from Settings (the environment, then the defaults)."""
+    for k in ("RELAY_PUBLIC_URL", "AITEAM_ISSUER", "RELAY_MULTI_BOX", *TIMEOUT_ENV):
         monkeypatch.delenv(k, raising=False)
     monkeypatch.setenv("RELAY_MULTI_BOX", multi)
+    for k, v in (env or {}).items():
+        monkeypatch.setenv(k, str(v))
     app = create_app(Settings(), client=httpx.AsyncClient(transport=httpx.MockTransport(world.site)),
                      jwks=FakeJwks(), box_transport=DeadAware(world), clock=clock, box_timeout=box_timeout)
     async with contextlib.AsyncExitStack() as st:
@@ -240,11 +275,16 @@ async def test_list_union_with_box_enum(world, clock, monkeypatch):
 async def test_list_tools_cached_per_box(world, clock, monkeypatch):
     async with relay(world, clock, monkeypatch) as app, session(app, V3()) as s:
         await s.list_tools()
+        await app.state.pool.tools_cache.idle()
         n = len(world.a.auth_seen)
         await s.list_tools()
-        assert len(world.a.auth_seen) == n
         clock.t += 61
         await s.list_tools()
+        await app.state.pool.tools_cache.idle()
+        assert len(world.a.auth_seen) == n  # fresh for 5 minutes
+        clock.t += 240
+        await s.list_tools()  # served from the cache at once, refreshed in the background
+        await app.state.pool.tools_cache.idle()
         assert len(world.a.auth_seen) > n
 
 
@@ -378,7 +418,7 @@ async def test_slow_box_times_out_others_answer(world, clock, monkeypatch):
     assert res["box-a"]["ok"] and res["box-a"]["data"]["count"] == 1
     assert not res["box-b"]["ok"] and "no answer" in res["box-b"]["error"]
     assert took < 3
-    assert "only_a" in tools and "only_b" not in tools  # a slow box contributes nothing to the list
+    assert "only_a" in tools and "only_b" not in tools  # a box never loaded is left out until its list arrives
 
 
 async def test_kanban_fanout_all_partial(world, clock, monkeypatch):
@@ -579,3 +619,239 @@ def test_sniff():
     assert sniff(b"\x89PNG\r\n\x1a\n...") == ("image/png", "png")
     assert sniff(b"\x00\x00\x00\x18ftypisom") == ("video/mp4", "mp4")
     assert sniff(b"#!/bin/sh") is None
+
+
+# ---------------------------------------------------------------------------------------------------------- slow boxes
+# Production: 8 boxes, each needing a token exchange (1 to 2 s) and an MCP initialize before tools/list; with a 5 s
+# per-box limit none made it and the list showed only the relay's own tools. Times below are scaled down (0.1 s here
+# for 1 s there); `old_limit` is the old 5 s per-box limit at that scale, for a build that reads it from boxes.py.
+SLOW = {"RELAY_BOX_TIMEOUT": 3, "RELAY_LIST_TIMEOUT": 2.5, "RELAY_FANOUT_TIMEOUT": 1}
+
+
+def old_limit(monkeypatch, seconds=0.5):
+    from aiteam_relay import boxes
+    monkeypatch.setattr(boxes, "BOX_TIMEOUT", seconds, raising=False)
+
+
+async def settle(app, limit=4.0):
+    """Let background tool list loads finish."""
+    pool = getattr(app.state, "pool", None)
+    if pool is not None and hasattr(pool.tools_cache, "idle"):
+        await asyncio.wait_for(pool.tools_cache.idle(), limit)
+    else:
+        await asyncio.sleep(limit)
+
+
+def box_tools(world):
+    for b in (world.a, world.b):
+        b.tools["messages_send"] = (RW, lambda a: {"sent": True})
+        b.tools["permissions_list_open"] = (RO, lambda a: {"count": 0, "open": []})
+
+
+async def test_slow_exchange_and_initialize_still_list_every_box(world, clock, monkeypatch):
+    box_tools(world)
+    world.exchange_delay = 0.35  # each box: exchange + initialize = 0.65 s, over the old 0.5 s
+    world.a.init_delay = world.b.init_delay = 0.3
+    old_limit(monkeypatch)
+    async with relay(world, clock, monkeypatch, box_timeout=None, env=SLOW) as app, session(app, V3()) as s:
+        tools = {t.name: t for t in (await s.list_tools()).tools}
+    for name in ("messages_send", "permissions_list_open", "only_a", "only_b"):
+        assert name in tools, name
+    ms = tools["messages_send"]
+    assert ms.inputSchema["properties"]["box"]["enum"] == ["box-a", "box-b"]
+    assert "box" in ms.inputSchema["required"] and "Available on" not in (ms.description or "")
+    assert ms.annotations.readOnlyHint is False
+
+
+async def test_hanging_box_list_is_bounded_then_appears(world, clock, monkeypatch):
+    world.b.list_delay = 1.0  # box-b hangs past the whole tools/list bound
+    old_limit(monkeypatch, 0.4)
+    env = {**SLOW, "RELAY_LIST_TIMEOUT": 0.4}
+    async with relay(world, clock, monkeypatch, box_timeout=None, env=env) as app, session(app, V3()) as s:
+        t0 = time.monotonic()
+        first = {t.name for t in (await s.list_tools()).tools}
+        took = time.monotonic() - t0
+        await settle(app)  # box-b's load keeps running in the background and lands
+        t1 = time.monotonic()
+        second = {t.name for t in (await s.list_tools()).tools}
+        took2 = time.monotonic() - t1
+    assert took < 1.0, "the list waited for the hanging box"
+    assert "only_a" in first and "only_b" not in first
+    assert "only_b" in second and "only_a" in second
+    assert took2 < 0.5  # served from the cache, no wait on box-b
+
+
+async def test_failing_box_keeps_last_good_list(world, clock, monkeypatch, caplog):
+    import logging
+    caplog.set_level(logging.INFO)
+    async with relay(world, clock, monkeypatch, box_timeout=None, env=SLOW) as app, session(app, V3()) as s:
+        await s.list_tools()
+        await settle(app)
+        world.dead.add("box-b.aiteam.space")
+        clock.t += 301  # past the 5 minute freshness: the next list refreshes every box
+        during = {t.name for t in (await s.list_tools()).tools}
+        await settle(app)  # box-b's refresh fails
+        after = {t.name for t in (await s.list_tools()).tools}
+        await settle(app)
+        cache = getattr(getattr(app.state, "pool", None), "tools_cache", None)
+        entries = getattr(cache, "entries", {})
+        b_entry = next((e for k, e in entries.items() if k.startswith(B_URL)), None)
+    assert "only_b" in during and "only_b" in after
+    assert "keeping the last good list" in caplog.text
+    assert b_entry is not None and b_entry.stale and "unreachable" in b_entry.error
+
+
+async def test_call_on_unlisted_box_refreshes_once_then_routes(world, clock, monkeypatch):
+    from aiteam_relay.boxes import raw_call  # tools/call as sent by a client that does not list first
+    world.dead.add("box-b.aiteam.space")  # box-b's first load fails: the list has nothing from it
+    async with relay(world, clock, monkeypatch, box_timeout=None, env=SLOW) as app, session(app, V3()) as s:
+        first = {t.name for t in (await s.list_tools()).tools}
+        await settle(app)
+        world.dead.discard("box-b.aiteam.space")
+        n = world.b.lists
+        r = await raw_call(s, "only_b", {"box": "box-b"})
+        after_call = world.b.lists
+        listed = {t.name for t in (await s.list_tools()).tools}
+        after_list = world.b.lists
+        # a tool added on the box later: one reload, then routed
+        world.b.tools["fresh_b"] = (RO, lambda a: {"fresh": True})
+        clock.t += 11
+        r2 = await raw_call(s, "fresh_b", {"box": "box-b"})
+        m = world.b.lists
+        # a name the box does not have: no reload storm, the box answers for itself
+        await raw_call(s, "nope", {"box": "box-b"})
+        await raw_call(s, "nope", {"box": "box-b"})
+        m2 = world.b.lists
+        names = {t.name for t in (await s.list_tools()).tools}
+    assert "only_b" not in first
+    assert not r.isError and data(r) == {"from": "b"}
+    assert after_call == n + 1, "the call reloaded box-b's list once"
+    assert "only_b" in listed and after_list == after_call  # the next list is served from that reload
+    assert not r2.isError and data(r2) == {"fresh": True} and m == after_list + 1
+    assert m2 == m and "fresh_b" in names
+
+
+async def test_tools_cache_holds_no_tokens(world, clock, monkeypatch, caplog):
+    import hashlib
+    import logging
+    caplog.set_level(logging.DEBUG)
+    tok = V3()
+    world.dead.add("box-b.aiteam.space")
+    async with relay(world, clock, monkeypatch, box_timeout=None, env=SLOW) as app, session(app, tok) as s:
+        await s.list_tools()
+        await settle(app)
+        world.dead.discard("box-b.aiteam.space")
+        clock.t += 31
+        await s.list_tools()
+        await settle(app)
+        await s.call_tool("shared", {"box": "box-a"})
+        cache = app.state.pool.tools_cache
+        dump = json.dumps([[k, [t.model_dump(mode="json") for t in (e.tools or [])], e.error]
+                           for k, e in cache.entries.items()])
+    assert len(cache.entries) == 2
+    issued = [t for ts in world.issued.values() for t in ts]
+    for secret in (tok, hashlib.sha256(tok.encode()).hexdigest(), *issued):
+        assert secret not in dump and secret not in caplog.text
+    assert "Bearer" not in dump and "box-token-" not in dump
+    assert "left out" in caplog.text  # which boxes were missing is logged, by box name only
+
+
+async def test_tools_cache_is_per_account_and_bounded(world, clock, monkeypatch):
+    from aiteam_relay.toolcache import ToolsCache
+    async with relay(world, clock, monkeypatch, box_timeout=None, env=SLOW) as app:
+        for who in ("acct1", "acct2"):
+            async with session(app, V3(sub=who)) as s:
+                await s.list_tools()
+        await settle(app)
+        keys = list(app.state.pool.tools_cache.entries)
+    assert len(keys) == 4 and len({k.rsplit("|", 1)[1] for k in keys}) == 2  # one list per box per account
+    c = ToolsCache(clock=clock, max_entries=3)
+
+    async def load():
+        return []
+    for i in range(5):
+        await c.start(f"k{i}", load, f"b{i}")
+    assert list(c.entries) == ["k2", "k3", "k4"]
+
+
+# ---------------------------------------------------------------------------------------------------------- settings
+def test_timeouts_from_env(monkeypatch):
+    for k in TIMEOUT_ENV:
+        monkeypatch.delenv(k, raising=False)
+    s = Settings()
+    assert (s.box_timeout, s.targets_timeout, s.fanout_timeout, s.list_timeout, s.tools_ttl) == \
+        (30.0, 15.0, 10.0, 25.0, 300.0)
+    for k, v in zip(TIMEOUT_ENV, ("45", "20", "4", "12.5", "60")):
+        monkeypatch.setenv(k, v)
+    s = Settings()
+    assert (s.box_timeout, s.targets_timeout, s.fanout_timeout, s.list_timeout, s.tools_ttl) == \
+        (45.0, 20.0, 4.0, 12.5, 60.0)
+    for bad in ("", "abc", "0", "-3", "99999"):
+        monkeypatch.setenv("RELAY_BOX_TIMEOUT", bad)
+        assert Settings().box_timeout == 30.0, bad
+
+
+async def test_timeouts_reach_the_pool_and_targets_call(world, clock, monkeypatch):
+    env = {"RELAY_BOX_TIMEOUT": 4, "RELAY_TARGETS_TIMEOUT": 7, "RELAY_FANOUT_TIMEOUT": 2, "RELAY_LIST_TIMEOUT": 3}
+    async with relay(world, clock, monkeypatch, box_timeout=None, env=env) as app, session(app, V3()) as s:
+        await s.list_tools()
+        pool = app.state.pool
+    assert (pool.box_timeout, pool.fanout_timeout, pool.list_timeout) == (4.0, 2.0, 3.0)
+    assert world.targets_timeouts and set(world.targets_timeouts) == {7.0}
+
+
+async def test_fanout_keeps_its_own_short_budget(world, clock, monkeypatch):
+    world.b.list_delay = 3.0  # box-b never lists within a fan-out leg
+    env = {"RELAY_BOX_TIMEOUT": 5, "RELAY_FANOUT_TIMEOUT": 0.3, "RELAY_LIST_TIMEOUT": 0.3}
+    async with relay(world, clock, monkeypatch, box_timeout=None, env=env) as app, session(app, V3()) as s:
+        t0 = time.monotonic()
+        r = await s.call_tool("kanban_list", {"box": "all"})
+        h = await s.call_tool("boxes_list", {})
+        took = time.monotonic() - t0
+        world.b.list_delay = 0
+        await app.state.pool.tools_cache.aclose()
+    res = {row["box"]: row for row in data(r)["results"]}
+    rows = {row["box"]: row for row in data(h)["boxes"]}
+    assert res["box-a"]["ok"] and not res["box-b"]["ok"] and "0.3 s" in res["box-b"]["error"]
+    assert rows["box-a"]["ok"] and not rows["box-b"]["ok"]
+    assert took < 2.0
+
+
+# ---------------------------------------------------------------------------------------------------- invalid_target
+async def test_widened_single_box_grant_sends_target(world, clock, monkeypatch):
+    # The owner widened a one-box connection in Settings (aiteam.space now says grant_v 3); the client still holds a
+    # token minted before, with the old single-box claims. An exchange without `target` is refused (invalid_target).
+    world.grant_v = 3
+    tok = mint()  # v1 claims: son_id, no grant_v
+    async with relay(world, clock, monkeypatch) as app, session(app, tok) as s:
+        names = {t.name for t in (await s.list_tools()).tools}
+        r = await s.call_tool("only_b", {"box": "box-b"})
+    assert {"only_a", "only_b"} <= names
+    assert not r.isError and data(r) == {"from": "b"}
+    assert world.exchanges and all(e.get("target") in (SON_A, SON_B) for e in world.exchanges)
+
+
+async def test_single_box_grant_keeps_plain_exchange_when_site_says_v1(world, clock, monkeypatch):
+    world.grant_v = 1
+    world.targets = [world.targets[0]]
+    async with relay(world, clock, monkeypatch) as app, session(app, mint()) as s:
+        r = await s.call_tool("only_a", {})
+    assert not r.isError
+    assert world.exchanges and all("target" not in e for e in world.exchanges)
+
+
+# ---------------------------------------------------------------------------------------------------------- box tools
+async def test_box_tools_pass_through_with_box(world, clock, monkeypatch):
+    names = ("messages_send", "messages_read", "discord_read", "sessions_list", "permissions_list_open",
+             "permissions_respond", "cronjob_manage", "ping")
+    for b in (world.a, world.b):
+        for n in names:
+            b.tools[n] = (RO if n in ("discord_read", "messages_read", "sessions_list", "permissions_list_open",
+                                      "ping") else RW, lambda a, n=n: {"tool": n, "args": a})
+    async with relay(world, clock, monkeypatch) as app, session(app, V3()) as s:
+        tools = {t.name: t for t in (await s.list_tools()).tools}
+        r = await s.call_tool("discord_read", {"box": "box-b", "x": "c1"})
+    for n in names:
+        assert tools[n].inputSchema["properties"]["box"]["enum"] == ["box-a", "box-b"], n
+    assert data(r) == {"tool": "discord_read", "args": {"x": "c1"}}
+    assert world.b.calls[-1] == ("discord_read", {"x": "c1"})

@@ -8,7 +8,6 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
-from dataclasses import dataclass
 from datetime import timedelta
 from typing import Any, Awaitable, Callable
 
@@ -19,16 +18,18 @@ from mcp.client.streamable_http import streamable_http_client
 from mcp.shared.exceptions import McpError
 
 from . import __version__
-from .exchange import ExchangeError, Exchanger, InvalidGrant, InvalidTarget, token_key
+from .exchange import ExchangeError, Exchanger, InvalidGrant, InvalidTarget
 from .targets import Target
+from .toolcache import TTL as TOOLS_TTL, Entry, ToolsCache
 
 log = logging.getLogger("aiteam_relay.boxes")
 
-TOOLS_TTL = 60
-BOX_TIMEOUT = 5.0  # tools/list per box and every fan-out leg
+BOX_TIMEOUT = 30.0  # loading one box's tool list: exchange + MCP initialize + tools/list (env RELAY_BOX_TIMEOUT)
+FANOUT_TIMEOUT = 10.0  # one box in boxes_list or an `all` read (env RELAY_FANOUT_TIMEOUT)
+LIST_TIMEOUT = 25.0  # one tools/list answer waits at most this long for boxes not cached yet (env RELAY_LIST_TIMEOUT)
 CALL_TIMEOUT = 900.0  # one routed tool call (a box may run a long job)
 FANOUT_CONCURRENCY = 8
-CACHE_MAX = 5_000
+LOAD_CONCURRENCY = 32  # tool list loads running at once in this process, all connections together
 
 
 class BoxError(Exception):
@@ -37,12 +38,6 @@ class BoxError(Exception):
 
 class BoxUnauthorized(BoxError):
     pass
-
-
-@dataclass
-class _Tools:
-    tools: list[types.Tool]
-    expires_at: float
 
 
 def _walk(e: BaseException):
@@ -57,16 +52,19 @@ def _walk(e: BaseException):
 class BoxPool:
     def __init__(self, exchanger: Exchanger, *, transport: httpx.AsyncBaseTransport | None = None,
                  clock: Callable[[], float] = time.time, box_timeout: float = BOX_TIMEOUT,
+                 fanout_timeout: float = FANOUT_TIMEOUT, list_timeout: float = LIST_TIMEOUT,
                  call_timeout: float = CALL_TIMEOUT, tools_ttl: float = TOOLS_TTL,
                  concurrency: int = FANOUT_CONCURRENCY) -> None:
         self.exchanger = exchanger
         self.transport = transport
         self.clock = clock
         self.box_timeout = box_timeout
+        self.fanout_timeout = fanout_timeout
+        self.list_timeout = list_timeout
         self.call_timeout = call_timeout
-        self.tools_ttl = tools_ttl
         self.concurrency = concurrency
-        self.tools_cache: dict[str, _Tools] = {}
+        self.tools_cache = ToolsCache(clock=clock, ttl=tools_ttl)
+        self._load_sem: asyncio.Semaphore | None = None
 
     # ------------------------------------------------------------------ token
     async def _token(self, subject: str, subject_exp: float | None, t: Target, legacy: bool) -> str:
@@ -137,16 +135,17 @@ class BoxPool:
         raise BoxError("unreachable")  # pragma: no cover
 
     # ------------------------------------------------------------------ tools
-    def _tools_key(self, subject: str, t: Target) -> str:
-        return f"{token_key(subject)}|{t.kind}:{t.id}"
+    @staticmethod
+    def tools_key(cache_id: str, t: Target) -> str:
+        """Box address + target + the caller's account/scope hash. Never a token."""
+        return f"{t.mcp_url}|{t.kind}:{t.id}|{cache_id}"
 
-    async def tools(self, subject: str, subject_exp: float | None, t: Target, legacy: bool) -> list[types.Tool]:
-        key = self._tools_key(subject, t)
-        now = self.clock()
-        hit = self.tools_cache.get(key)
-        if hit and hit.expires_at > now:
-            return hit.tools
+    def cached_tools(self, cache_id: str, t: Target) -> Entry | None:
+        return self.tools_cache.peek(self.tools_key(cache_id, t))
 
+    def load_tools(self, subject: str, subject_exp: float | None, t: Target, legacy: bool, cache_id: str
+                   ) -> asyncio.Task:
+        """Start (or join) a background load of one box's tool list, `box_timeout` from its first byte out."""
         async def fetch(s: ClientSession) -> list[types.Tool]:
             out: list[types.Tool] = []
             cursor = None
@@ -158,16 +157,47 @@ class BoxPool:
                     break
             return out
 
-        tools = await self.run(subject, subject_exp, t, legacy, fetch, timeout=self.box_timeout)
-        for k in [k for k, v in self.tools_cache.items() if v.expires_at <= now]:
-            del self.tools_cache[k]
-        while len(self.tools_cache) >= CACHE_MAX:
-            self.tools_cache.pop(next(iter(self.tools_cache)))
-        self.tools_cache[key] = _Tools(tools, now + self.tools_ttl)
-        return tools
+        async def load() -> list[types.Tool]:
+            if self._load_sem is None:
+                self._load_sem = asyncio.Semaphore(LOAD_CONCURRENCY)
+            async with self._load_sem:
+                try:  # the budget covers the token exchange too, not only the box
+                    async with asyncio.timeout(self.box_timeout):
+                        return await self.run(subject, subject_exp, t, legacy, fetch, timeout=self.box_timeout)
+                except TimeoutError:
+                    raise BoxError(f"no answer within {self.box_timeout:g} s") from None
 
-    def drop_tools(self, subject: str, t: Target) -> None:
-        self.tools_cache.pop(self._tools_key(subject, t), None)
+        return self.tools_cache.start(self.tools_key(cache_id, t), load, t.key)
+
+    def warm(self, subject: str, subject_exp: float | None, targets: list[Target], legacy: bool,
+             cache_id: str) -> dict[str, asyncio.Task]:
+        """Start background loads for every box whose list is missing or due; returns the running loads by box."""
+        out = {}
+        for t in targets:
+            key = self.tools_key(cache_id, t)
+            if self.tools_cache.needs_load(key) or key in self.tools_cache.inflight:
+                out[t.key] = self.load_tools(subject, subject_exp, t, legacy, cache_id)
+        return out
+
+    async def tools(self, subject: str, subject_exp: float | None, t: Target, legacy: bool, cache_id: str, *,
+                    force: bool = False) -> list[types.Tool]:
+        """One box's tools: the cached list (stale or not) when there is one, else wait for a load. force = reload
+        and wait (a call named a tool the cached list does not show). Raises BoxError when there is no list at all."""
+        key = self.tools_key(cache_id, t)
+        cache = self.tools_cache
+        if force and (key in cache.inflight or cache.force(key)):
+            await asyncio.shield(self.load_tools(subject, subject_exp, t, legacy, cache_id))
+        hit = cache.peek(key)
+        if hit is not None and hit.tools is not None:
+            if cache.needs_load(key):
+                self.load_tools(subject, subject_exp, t, legacy, cache_id)  # refresh in the background
+            return hit.tools
+        if not cache.needs_load(key) and key not in cache.inflight:
+            raise BoxError(hit.error if hit and hit.error else "the box did not list its tools")
+        got = await asyncio.shield(self.load_tools(subject, subject_exp, t, legacy, cache_id))
+        if isinstance(got, BaseException):
+            raise got if isinstance(got, BoxError) else BoxError("the box did not list its tools")
+        return got
 
     async def call(self, subject: str, subject_exp: float | None, t: Target, legacy: bool, name: str,
                    args: dict, *, timeout: float | None = None,
@@ -178,16 +208,17 @@ class BoxPool:
         return await self.run(subject, subject_exp, t, legacy, go, timeout=timeout)
 
     async def fan_out(self, targets: list[Target], fn: Callable[[Target], Awaitable[Any]]) -> list[tuple[Target, Any]]:
-        """Run fn per box, at most `concurrency` at once, `box_timeout` each. Result per box: value or BoxError."""
+        """Run fn per box, at most `concurrency` at once, `fanout_timeout` each. Result per box: value or BoxError."""
         sem = asyncio.Semaphore(self.concurrency)
+        limit = self.fanout_timeout
 
         async def one(t: Target):
             async with sem:
                 try:
-                    async with asyncio.timeout(self.box_timeout):
+                    async with asyncio.timeout(limit):
                         return t, await fn(t)
                 except TimeoutError:
-                    return t, BoxError(f"no answer within {self.box_timeout:g} s")
+                    return t, BoxError(f"no answer within {limit:g} s")
                 except BoxError as e:
                     return t, e
                 except Exception as e:  # never let one box break the others

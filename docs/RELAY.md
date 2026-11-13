@@ -61,6 +61,14 @@ Logs: no tokens, no full upstream URLs (only the Son host name). The `httpx` log
 | `OPENAI_APPS_CHALLENGE` | unset | OpenAI domain verification token |
 | `OPENAI_APPS_CHALLENGE_FILE` | unset | or read the token from this file (used when the variable is unset) |
 | `RELAY_MULTI_BOX` | `off` | `on` = the relay is its own MCP server over every box in the connection (see Multiple boxes) |
+| `RELAY_BOX_TIMEOUT` | `30` | multi-box: seconds to load one box's tool list (token exchange, MCP initialize, tools/list) |
+| `RELAY_TARGETS_TIMEOUT` | `15` | multi-box: seconds for one `GET /oauth/targets` |
+| `RELAY_FANOUT_TIMEOUT` | `10` | multi-box: seconds per box in `boxes_list` and in `box="all"` reads |
+| `RELAY_LIST_TIMEOUT` | `25` | multi-box: the longest one `tools/list` answer waits for boxes whose list is not cached yet |
+| `RELAY_TOOLS_TTL` | `300` | multi-box: seconds a box's cached tool list counts as fresh |
+
+Time values are seconds (decimals allowed), above 0 and at most 3600. Anything else keeps the default and logs a
+warning.
 
 ## Multiple boxes
 
@@ -85,19 +93,43 @@ client --relay token--> relay --GET /oauth/targets (relay token)--> aiteam.space
 | Tool | What it does |
 |---|---|
 | every box tool | Listed once by name with an extra `box` argument (the box names in this connection). `box` is required when the connection has more than one box. A tool that only some boxes have says `Available on: a, b`. The result comes back exactly as the box sent it. |
-| `boxes_list` | The boxes in the connection, each with a live health check (the box's `box_health`, 5 s per box). |
+| `boxes_list` | The boxes in the connection, each with a live health check (the box's `box_health`, `RELAY_FANOUT_TIMEOUT` per box). |
 | `kanban_list`, `kanban_read`, `memory_read` | Read-only. `box` = one box, or `all` to ask every box at once. The answer is grouped per box with `ok` or `error`. |
 | `calendar_post` | Adds a post to a content calendar box in the connection through its `board_add_item` tool. With `date` it waits for review on that day; without one it lands in Unscheduled. It never approves or publishes. |
 
 Annotations: when boxes disagree on a tool's hints, the relay shows the least safe one (read-only only if every box
 says so, destructive if any box says so).
 
+Box tools pass through by their own names (for example `messages_send`, `messages_read`, `discord_read`,
+`sessions_list`, `permissions_list_open`, `permissions_respond`, `cronjob_manage`), each with the `box` argument.
+
+### Tool list cache
+Listing a box's tools costs a token exchange, an MCP handshake and `tools/list`, often a few seconds per box. So the
+relay keeps each box's tool list in memory, per process:
+
+- Key: the box address and id, plus a hash of the account and granted scope. Only tool definitions are stored: no
+  tokens and no tool results.
+- Fresh for `RELAY_TOOLS_TTL` (5 minutes). After that the cached list is still served at once and refreshed in the
+  background.
+- Warm start: as soon as a request's boxes are known, the relay starts loading every box that is not cached, so the
+  `tools/list` after `initialize` usually finds them ready.
+- Cold box: `tools/list` waits for it, up to `RELAY_LIST_TIMEOUT` in total for all such boxes, and then answers with
+  what is ready. The log names the boxes left out. Their loads keep running (up to `RELAY_BOX_TIMEOUT` each) and show
+  up in the next `tools/list`.
+- A box whose refresh fails keeps its last good list (served as stale) and is tried again after 30 s.
+- A `tools/call` with `box` for a tool that box's cached list does not show reloads that one list once (at most every
+  10 s per box), then routes the call. The box answers for its own tools.
+- At most 2,000 lists per process; the least recently used goes first.
+
 ### Limits
 - 50 boxes per connection. Anything after that is dropped and `boxes_list` reports `truncated`.
-- 8 boxes asked at once, 5 s per box for listing tools, health and `all` reads. A box that is down or slow is left
-  out of the tool list and shows `ok: false` in `boxes_list`; the other boxes still answer.
+- 8 boxes asked at once per fan-out, `RELAY_FANOUT_TIMEOUT` (10 s) per box for `boxes_list` and `all` reads, so one
+  dead box never holds a fan-out answer for long. A box that is down shows `ok: false`; the other boxes still answer.
+- Loading a tool list: `RELAY_BOX_TIMEOUT` (30 s) per box, 32 loads at once per process. A box never listed before
+  is left out of `tools/list` until its first list arrives; a box listed before stays listed (see Tool list cache).
 - An `all` answer is capped at 256 KB. Boxes past the cap show `truncated` and can be asked on their own.
-- Tool lists are cached 60 s per box, the box list 30 s, box tokens until 30 s before they expire.
+- Tool lists are fresh for 5 minutes per box (then served while they refresh), the box list is cached 30 s
+  (`GET /oauth/targets`, `RELAY_TARGETS_TIMEOUT` 15 s), box tokens until 30 s before they expire.
 - Inline calendar media (`media_b64`) up to 2 MB. Use `media_url` for anything larger.
 
 ### Box addresses
@@ -112,7 +144,12 @@ prompt and resource when the connector package is installed next to it.
 
 ### Single-box connections
 Connections made before this change keep working unchanged: one box, `box` optional, and the exchange is sent without
-`target` as before. With `RELAY_MULTI_BOX=off` (the default) the relay is the plain stream proxy described above.
+`target` as before. If `GET /oauth/targets` fails for such a connection, it still works through that plain exchange.
+
+An owner can widen a single-box connection on aiteam.space (Settings, Connected apps). Tokens issued before that keep
+their single-box claims for up to an hour, but aiteam.space now needs `target` on every exchange for that connection.
+The relay follows the `grant_v` that `GET /oauth/targets` reports, not the token's claims, so those tokens get
+`target=<box id>` and reach every box of the widened connection. With `RELAY_MULTI_BOX=off` (the default) the relay is the plain stream proxy described above.
 
 ## Run
 ```
