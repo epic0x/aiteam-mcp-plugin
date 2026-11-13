@@ -29,7 +29,7 @@ FANOUT_TIMEOUT = 10.0  # one box in boxes_list or an `all` read (env RELAY_FANOU
 LIST_TIMEOUT = 25.0  # one tools/list answer waits at most this long for boxes not cached yet (env RELAY_LIST_TIMEOUT)
 CALL_TIMEOUT = 900.0  # one routed tool call (a box may run a long job)
 FANOUT_CONCURRENCY = 4
-LOAD_CONCURRENCY = 32  # tool list loads running at once in this process, all connections together
+LOAD_CONCURRENCY = 32  # tool list loads running at once in this process; their token exchanges queue in exchange.py
 
 
 class BoxError(Exception):
@@ -67,10 +67,13 @@ class BoxPool:
         self._load_sem: asyncio.Semaphore | None = None
 
     # ------------------------------------------------------------------ token
-    async def _token(self, subject: str, subject_exp: float | None, t: Target, legacy: bool) -> str:
-        """Exchange for this box. `legacy` = a single-box grant: today's exchange form, no `target`."""
+    async def _token(self, subject: str, subject_exp: float | None, t: Target, legacy: bool,
+                     deadline: float | None = None) -> str:
+        """Exchange for this box. `legacy` = a single-box grant: today's exchange form, no `target`. `deadline` (loop
+        time) bounds the exchanger's retries; concurrent callers for one box share one exchange (exchange.py)."""
         try:
-            ex = await self.exchanger.get(subject, subject_exp, target=None if legacy else t.id)
+            ex = await self.exchanger.get(subject, subject_exp, target=None if legacy else t.id, label=t.key,
+                                          deadline=deadline)
         except InvalidTarget:
             raise BoxError("box not in this connection") from None
         except InvalidGrant:
@@ -123,8 +126,9 @@ class BoxPool:
     async def run(self, subject: str, subject_exp: float | None, t: Target, legacy: bool,
                   fn: Callable[[ClientSession], Awaitable[Any]], timeout: float | None = None) -> Any:
         timeout = self.call_timeout if timeout is None else timeout
+        deadline = asyncio.get_running_loop().time() + timeout
         for attempt in (1, 2):
-            token = await self._token(subject, subject_exp, t, legacy)
+            token = await self._token(subject, subject_exp, t, legacy, deadline)
             try:
                 return await self._with_session(t, token, fn, timeout)
             except BoxUnauthorized:
