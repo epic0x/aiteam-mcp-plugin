@@ -5,7 +5,9 @@ exchanged token's exp - 30 s.
 """
 from __future__ import annotations
 
+import asyncio
 import hashlib
+import os
 import logging
 import re
 import time
@@ -74,6 +76,20 @@ def cache_key(subject_token: str, target: str | None = None) -> str:
     return token_key(subject_token) + (f"|{target}" if target else "")
 
 
+# aiteam.space gives its vault up to 20 s on /oauth/token: wait longer than that, never cut it short
+EXCHANGE_TIMEOUT = float(os.environ.get("RELAY_EXCHANGE_TIMEOUT", "25"))
+# at most this many exchanges in flight across the relay: a burst makes aiteam.space answer 503 / time out
+EXCHANGE_SLOTS = int(os.environ.get("RELAY_EXCHANGE_SLOTS", "2"))
+_slots: asyncio.Semaphore | None = None
+
+
+def _exchange_slots() -> asyncio.Semaphore:
+    global _slots
+    if _slots is None:
+        _slots = asyncio.Semaphore(EXCHANGE_SLOTS)
+    return _slots
+
+
 class Exchanger:
     def __init__(self, client: httpx.AsyncClient, *, token_url: str, suffix: str, relay_host: str,
                  clock: Callable[[], float] = time.time) -> None:
@@ -118,10 +134,20 @@ class Exchanger:
         self.calls += 1
         form = {"grant_type": GRANT_TYPE, "subject_token": subject_token, "subject_token_type": ACCESS_TOKEN_TYPE}
         form.update(extra or {})
-        try:
-            r = await self.client.post(self.token_url, data=form, headers={"Accept": "application/json"}, timeout=10)
-        except httpx.HTTPError as e:
-            raise ExchangeError(f"token endpoint unreachable ({type(e).__name__})") from None
+        r = None
+        for attempt in range(3):  # busy (429/5xx) or timed out: back off and try again
+            async with _exchange_slots():
+                try:
+                    r = await self.client.post(self.token_url, data=form, headers={"Accept": "application/json"},
+                                               timeout=EXCHANGE_TIMEOUT)
+                except httpx.HTTPError as e:
+                    if attempt == 2:
+                        raise ExchangeError(f"token endpoint unreachable ({type(e).__name__})") from None
+                    r = None
+            if r is not None and r.status_code not in (429, 500, 502, 503, 504):
+                break
+            if attempt < 2:
+                await asyncio.sleep(0.5 * (2 ** attempt))
         try:
             body = r.json()
         except ValueError:

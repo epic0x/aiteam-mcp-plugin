@@ -28,7 +28,7 @@ BOX_TIMEOUT = 30.0  # loading one box's tool list: exchange + MCP initialize + t
 FANOUT_TIMEOUT = 10.0  # one box in boxes_list or an `all` read (env RELAY_FANOUT_TIMEOUT)
 LIST_TIMEOUT = 25.0  # one tools/list answer waits at most this long for boxes not cached yet (env RELAY_LIST_TIMEOUT)
 CALL_TIMEOUT = 900.0  # one routed tool call (a box may run a long job)
-FANOUT_CONCURRENCY = 8
+FANOUT_CONCURRENCY = 4
 LOAD_CONCURRENCY = 32  # tool list loads running at once in this process, all connections together
 
 
