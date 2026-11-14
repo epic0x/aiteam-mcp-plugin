@@ -77,6 +77,20 @@ def test_rule_zero_updates_status_is_first():
         assert part in INSTRUCTIONS, part
 
 
+def test_rule_zero_whats_next_is_a_priority_sweep_not_the_board():
+    # "What's next?" / priorities / "let's continue" = the live sweep reconciled with past asks, never the board alone.
+    g = GUIDE.lower()
+    for phrase in ("\"what's next?\"", "\"what are our priorities?\"", "\"let's continue\"", "everything\n   the owner asked for before",
+                   "**not fully done**", "**redo**", "never answer from the board"):
+        assert phrase in g, phrase
+    assert g.index("what's next?") < g.index("## 1.")
+    i = INSTRUCTIONS
+    for phrase in ("'What's next?'", "'let's continue'", "everything the owner asked for before", "not fully done",
+                   "redone", "Never answer them from the board alone"):
+        assert phrase in i, phrase
+    assert i.index("'What's next?'") < i.index("call usage_guide")
+
+
 def test_guide_covers_computer_health_tools():
     g = GUIDE.lower()
     assert "## 8. the son's computer" in g

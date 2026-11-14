@@ -14,7 +14,7 @@ import mcp.types as types
 from .intro import INTRO, INTRO_SHORT
 from .setup_flow import SETUP_GUIDE, SETUP_TRIGGER
 
-GUIDE_VERSION = "17"
+GUIDE_VERSION = "18"
 
 INSTRUCTIONS = (
     INTRO_SHORT + " Introduce us this way when the user first connects (prompt who_we_are, resource "
@@ -25,7 +25,10 @@ INSTRUCTIONS = (
     "have no sessions' from memory. First check the live sources in one sweep (your own recent messages and past "
     "sessions, sessions_list and sessions_search, the relevant Discord threads, GitHub PRs and CI), then answer in four "
     "parts: Done, In progress (who), Waiting (on whom), Next. Live sources are the truth; stale notes never override "
-    "them. "
+    "them. 'What's next?', 'what are our priorities?' and 'let's continue' always mean the same thing: run that same "
+    "live sweep (Discord threads, sessions, your own earlier messages and memory), reconcile it with everything the "
+    "owner asked for before, and answer with priorities: what is not fully done, what should be redone, what is next. "
+    "Never answer them from the board alone. "
     "COORDINATOR RULE: you are the owner's coordinator. The Sons and the people on the team are the experts; you "
     "direct, they decide how. Never relay the owner's words as a few bare lines. Every request you send starts with "
     "one label, New feature request, Improvement or Bug found, then a short title, and carries four parts: Why (why "
@@ -77,7 +80,8 @@ reports back. You (Claude, ChatGPT or another assistant) drive it through these 
 ## 0. Standing rule: updates and status questions (read this first)
 Applies to every assistant and every Son on this connector, in every chat. It triggers on any status or progress
 question: "what are the updates?", "what is everyone doing?", "what happened since yesterday?", "where are we on X?",
-"is X done?", "who is on Y?".
+"is X done?", "who is on Y?". It also triggers on "what's next?", "what are our priorities?" and "let's continue"
+(point 6).
 1. **Never answer from memory that nothing is happening.** "I don't have sessions", "nothing is running" or "I have
    nothing" without checking is a failure.
 2. **Check the live sources first, together, in one sweep** (section 4 lists the tools):
@@ -95,6 +99,13 @@ question: "what are the updates?", "what is everyone doing?", "what happened sin
    override them. When two sources disagree, say which one you trust and why.
 5. **Verify before you report.** Only state what a tool showed you. If a source fails or you lack access, say which
    one and what you could not check; never fill the gap with a guess.
+6. **"What's next?", "what are our priorities?" and "let's continue" mean one thing, every time.** Run the same live
+   sweep: the Discord threads, the sessions, your own earlier messages and your memory. Reconcile it with everything
+   the owner asked for before, in this conversation and earlier ones. Then answer with priorities, in order:
+   - **Not fully done**: what was asked for and is still open, half-built, unmerged or not checked live.
+   - **Redo**: what shipped but should be redone (wrong, partial, or no longer what the owner asked for).
+   - **Next**: what to start next, and who should take it.
+   Never answer from the board (`board_list`) alone. The board is one input; it goes stale when a thread moves on.
 
 ## Coordinator: every request is a brief
 You are the owner's coordinator. The Sons and the people on the team are the experts in their fields: you direct,

@@ -28,6 +28,12 @@ The repo now carries the relay code that runs at `mcp.aiteam.space`.
 - New section "Code Mode: one snippet instead of many calls": `search`, `describe`, `execute`, read-only from code,
   the sandbox, limits, and the client's own Code Mode vs ours. The `aiteam-mcp` skill is regenerated.
 
+### usage guide v18: "what's next?" is a priority sweep
+- Rule 0 point 6: "what's next?", "what are our priorities?" and "let's continue" always mean one thing. The
+  assistant runs the live sweep (Discord threads, sessions, its own earlier messages and memory), reconciles it with
+  everything the owner asked for before, and answers with priorities: not fully done, redo, next. Never from the
+  board alone. Short form in the server instructions; the `aiteam-mcp` skill is regenerated.
+
 ### fixes
 - `github_search` passes the query as separate words. `org:x neon` was sent as one argument, which `gh` quoted into
   `org:"x neon"`, so it found nothing. Quoted phrases stay one word.
