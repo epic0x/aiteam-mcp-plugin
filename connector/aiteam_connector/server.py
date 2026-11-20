@@ -649,7 +649,8 @@ class Connector:
         self.http = httpx.AsyncClient(timeout=httpx.Timeout(900, connect=10), transport=transport,
                                       headers={"User-Agent": f"aiteam-connector/{VERSION}"})
         # GitHub = the Son's own gh login, on by default (owner 2026-10-12). Only an explicit false/None turns it off.
-        self.github = None if github in (False, None) else (gh_runner or GhRunner(github if isinstance(github, dict) else None))
+        self.github = None if github in (False, None) else (gh_runner or GhRunner(
+            github if isinstance(github, dict) else None, name=self.order[0] if len(self.order) == 1 else None))
         self.upstreams = {s.name: Upstream(s.upstream_mcp_url, s.upstream_token)
                           for s in sons if s.upstream_mcp_url and passthrough != "none"}
 

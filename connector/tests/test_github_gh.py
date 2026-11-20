@@ -9,7 +9,7 @@ import textwrap
 import pytest
 
 from aiteam_connector.github_gh import (GITHUB_TOOLS, NOT_LOGGED_IN, SPECS, WRITE_TOOLS, GhError, GhRunner, build_argv,
-                                        github_tools)
+                                        github_tools, search_terms)
 from aiteam_connector.server import Connector, SonLink
 
 R = "--repo=epic0x/aiteam"
@@ -30,7 +30,7 @@ CASES = {
     "github_run_list": ({"repo": "epic0x/aiteam", "branch": "main"}, ["run", "list", R, "--branch=main"]),
     "github_run_view": ({"repo": "epic0x/aiteam", "run_id": 123, "log_failed": True}, ["run", "view", "123", R, "--log-failed"]),
     "github_workflow_list": ({"repo": "epic0x/aiteam"}, ["workflow", "list", R]),
-    "github_search": ({"kind": "prs", "query": "--help is:open"}, ["search", "prs", "--", "--help is:open"]),
+    "github_search": ({"kind": "prs", "query": "--help is:open"}, ["search", "prs", "--", "--help", "is:open"]),
     "github_issue_create": ({"repo": "epic0x/aiteam", "title": "-x; rm -rf /", "body": "$(id)", "label": ["bug"]},
                             ["issue", "create", R, "--title=-x; rm -rf /", "--body=$(id)", "--label=bug"]),
     "github_issue_comment": ({"repo": "epic0x/aiteam", "number": 3, "body": "--repo=evil/x"},
@@ -160,6 +160,23 @@ sys.stderr.write("You are not logged into any GitHub hosts. To log in, run: gh a
     assert out.startswith(NOT_LOGGED_IN.format(url="https://aiteam.space/my-sons"))
 
 
+async def test_missing_login_names_the_son(tmp_path):
+    gh = fake_gh(tmp_path, """
+sys.stderr.write("You are not logged into any GitHub hosts. To log in, run: gh auth login\\n"); sys.exit(4)
+""")
+    url = "https://aiteam.space/my-sons/abc?connect=github"
+    ok, out = await GhRunner({"gh_bin": gh, "connect_url": url, "name": "box-a"}).call("github_auth_status", {})
+    assert not ok and out.startswith(f"Connect GitHub to your Son box-a: follow the guide at {url}.")
+    ok, out = await GhRunner({"gh_bin": gh, "connect_url": url}, name="my-son").call("github_search",
+                                                                                    {"kind": "code", "query": "x"})
+    assert out.startswith(f"Connect GitHub to your Son my-son: follow the guide at {url}.")
+    # the connector names its Son when it serves exactly one
+    conn = Connector([SonLink("my-son", "http://127.0.0.1:9", "t")], github={"gh_bin": gh, "connect_url": url})
+    assert conn.github.name == "my-son"
+    conn = Connector([SonLink("a", "http://127.0.0.1:9", "t"), SonLink("b", "http://127.0.0.1:9", "t")])
+    assert conn.github.name == ""
+
+
 async def test_gh_missing_entirely(tmp_path, monkeypatch):
     import aiteam_connector.github_gh as G
     monkeypatch.setattr(G.shutil, "which", lambda *a, **k: None)  # CI runners ship gh in /usr/bin
@@ -266,6 +283,38 @@ def test_allowlist_allows_and_scopes_search():
     assert build_argv("github_api", {"path": "/user"}, A)[0][-1] == "/user"
     argv, _ = build_argv("github_search", {"kind": "prs", "query": "is:open"}, A)
     assert argv == ["search", "prs", "--owner=epic0x", "--", "is:open"]
+
+
+# --------------------------------------------------------------------------------------------- search query terms
+@pytest.mark.parametrize("query,terms", [
+    ("org:acme widget", ["org:acme", "widget"]),          # was org:"acme widget"
+    ("org:acme", ["org:acme"]),
+    ("  repo:epic0x/aiteam   is:open\tlabel:bug\n", ["repo:epic0x/aiteam", "is:open", "label:bug"]),
+    ('org:epic0x "rate limit"', ["org:epic0x", "rate limit"]),          # gh quotes it back: a phrase
+    ('label:"good first issue" is:open', ["label:good first issue", "is:open"]),
+    ("it's broken", ["it's", "broken"]),
+    ('"unclosed phrase', ["unclosed phrase"]),
+    ('a "" b', ["a", "b"]),
+    ("", []),
+    ("   ", []),
+])
+def test_search_terms(query, terms):
+    assert search_terms(query) == terms
+
+
+def test_search_sends_one_argument_per_term_after_dashdash():
+    argv, _ = build_argv("github_search", {"kind": "code", "query": "org:acme widget", "limit": 5})
+    assert argv == ["search", "code", "--limit=5", "--", "org:acme", "widget"]
+    argv, _ = build_argv("github_search", {"kind": "code", "query": "widget"}, {"acme"})
+    assert argv == ["search", "code", "--owner=acme", "--", "widget"]
+    with pytest.raises(GhError, match="query is required"):
+        build_argv("github_search", {"kind": "repos", "query": "  "})
+
+
+async def test_search_terms_reach_gh_as_separate_arguments(tmp_path):
+    r = GhRunner({"gh_bin": fake_gh(tmp_path, ECHO)})
+    ok, out = await r.call("github_search", {"kind": "code", "query": 'org:acme widget "cold start"'})
+    assert ok and json.loads(out)["argv"] == ["search", "code", "--", "org:acme", "widget", "cold start"]
 
 
 async def test_allowlist_from_config(tmp_path):

@@ -12,14 +12,16 @@ Safety rules (review checklist, 2026-10-12):
   1. No shell, ever. ``asyncio.create_subprocess_exec(gh, *argv)`` with a list. Repo / ref / number inputs are
      validated by regex or int. Free text is always passed glued to its flag (``--title=<text>``) or on stdin, so
      nothing a user types can become a ``gh`` flag or a second command.
-  2. No login on the Son -> "Connect GitHub to your Son: follow the guide at <connect_url>." with gh's own message
-     underneath (plain words first for non-technical owners).
+  2. No login on the Son -> "Connect GitHub to your Son <name>: follow the guide at <connect_url>." with gh's own
+     message underneath (plain words first for non-technical owners). <name> = `name` in the config, else the Son
+     this connector serves, so a reply routed through a multi-box relay says which box needs the login.
   3. No new consent: these tools need only the MCP access the connector already has (any token the gate accepts).
   4. Every call is capped (default 30 s, 60 000 chars). A cut answer says so and how to narrow it.
 
 Config (connector JSON, optional; GitHub is ON unless ``"github": false``):
   "github": {"gh_bin": "/path/to/gh", "timeout_s": 30, "max_output_chars": 60000,
              "connect_url": "https://aiteam.space/my-sons/<son id>?connect=github",   # where the no-login message points
+             "name": "box-a",                                                  # the Son named in that message
              "allowed_owners": ["epic0x"]}   # OFF by default (= full gh parity). Set it on Sons whose gh is
                                              # logged in as a person with wide access, to keep the MCP to those orgs.
 """
@@ -44,6 +46,7 @@ API_PATH_RE = re.compile(r"^[A-Za-z0-9._~/{}:@!$&'()*+,;=%?-]{1,500}$")
 API_METHODS = ("GET", "POST", "PATCH", "PUT", "DELETE")
 DEFAULT_CONNECT_URL = "https://aiteam.space/my-sons"
 NOT_LOGGED_IN = "Connect GitHub to your Son: follow the guide at {url}."
+NOT_LOGGED_IN_NAMED = "Connect GitHub to your Son {name}: follow the guide at {url}."
 
 
 class GhError(Exception):
@@ -101,9 +104,13 @@ SPECS: dict[str, tuple] = {
                         ["repo", "run_id"], {"repo": _REPO, "run_id": _NUM, "log_failed": {"type": "boolean"}, "json": _JSON}),
     "github_workflow_list": ("GitHub: list workflows", True, False, "`gh workflow list -R <repo>`.", ["repo"],
                              {"repo": _REPO, "json": _JSON}),
-    "github_search": ("GitHub: search", True, False, "`gh search issues|prs|repos|code|commits <query>`.", ["kind", "query"],
+    "github_search": ("GitHub: search", True, False,
+                      "`gh search issues|prs|repos|code|commits <query>`. Write the query as in GitHub's search box: "
+                      "qualifiers and words separated by spaces (org:epic0x connector, repo:epic0x/aiteam is:open "
+                      "label:bug), double quotes for an exact phrase (\"rate limit\") or a value with spaces "
+                      "(label:\"good first issue\").", ["kind", "query"],
                       {"kind": {"type": "string", "enum": ["issues", "prs", "repos", "code", "commits"]},
-                       "query": _TEXT("Search query."), "limit": _LIMIT, "json": _JSON}),
+                       "query": _TEXT("Search query, e.g. org:epic0x connector."), "limit": _LIMIT, "json": _JSON}),
     # ---- writes
     "github_issue_create": ("GitHub: create an issue", False, False, "`gh issue create -R <repo> --title --body`.",
                             ["repo", "title"], {"repo": _REPO, "title": _TEXT("Title."), "body": _TEXT("Body (markdown)."),
@@ -288,6 +295,32 @@ def _bool(argv: list, a: dict, key: str, flag: str) -> None:
         argv.append(flag)
 
 
+def search_terms(query: str) -> list[str]:
+    """Split a search query into one argument per term, the way a shell would hand them to `gh search`.
+
+    gh quotes any single argument that holds a space, so the whole query as one argument turns
+    `org:epic0x connector` into `org:"epic0x connector"` (an invalid query). Terms split on whitespace;
+    double quotes group a phrase and are dropped, and gh adds them back: `"exact phrase"` stays a phrase and
+    `label:"good first issue"` stays one qualifier. Apostrophes are plain text. An unclosed quote runs to the end.
+    """
+    out: list[str] = []
+    cur: list[str] = []
+    started = in_quote = False
+    for ch in query:
+        if ch == '"':
+            in_quote, started = not in_quote, True
+        elif ch.isspace() and not in_quote:
+            if started:
+                out.append("".join(cur))
+            cur, started = [], False
+        else:
+            cur.append(ch)
+            started = True
+    if started:
+        out.append("".join(cur))
+    return [t for t in out if t]
+
+
 def _owner_ok(owner: str, allowed: Optional[set]) -> None:
     if allowed is not None and owner.lower() not in allowed:
         raise GhError(f"This connector only reaches GitHub owners: {', '.join(sorted(allowed))}. "
@@ -349,7 +382,10 @@ def _build(name: str, a: dict) -> tuple[list[str], Optional[bytes]]:
             raise GhError("kind must be issues, prs, repos, code or commits")
         argv = ["search", kind]
         _limit(argv, a), _json(argv, a)
-        return argv + ["--", _txt(a.get("query") or "")], None
+        terms = search_terms(_txt(a.get("query") or ""))
+        if not terms:
+            raise GhError("query is required, e.g. org:epic0x connector")
+        return argv + ["--", *terms], None
     if name == "github_api":
         method = str(a.get("method") or "GET").upper()
         if method not in API_METHODS:
@@ -522,8 +558,9 @@ def _hint(stderr: str, code: int) -> str:
 
 
 class GhRunner:
-    def __init__(self, cfg: Optional[dict] = None, env: Optional[dict] = None):
+    def __init__(self, cfg: Optional[dict] = None, env: Optional[dict] = None, name: Optional[str] = None):
         cfg = cfg if isinstance(cfg, dict) else {}
+        self.name = str(cfg.get("name") or name or "").strip()[:80]
         env = dict(os.environ if env is None else env)
         home = env.get("HOME", "")
         extra = os.pathsep.join(p for p in (os.path.join(home, ".local/bin") if home else "", "/usr/local/bin", "/usr/bin") if p)
@@ -540,13 +577,13 @@ class GhRunner:
 
     async def run(self, argv: list[str], stdin: Optional[bytes] = None) -> tuple[int, str, str]:
         if not self.gh:
-            raise GhError(NOT_LOGGED_IN.format(url=self.connect_url) + "\n\n(gh, the GitHub CLI, is not installed on this Son.)")
+            raise GhError(self.not_logged_in() + "\n\n(gh, the GitHub CLI, is not installed on this Son.)")
         try:
             proc = await asyncio.create_subprocess_exec(
                 self.gh, *argv, stdin=asyncio.subprocess.PIPE if stdin is not None else asyncio.subprocess.DEVNULL,
                 stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE, env=self.env, cwd="/")
         except (FileNotFoundError, PermissionError):
-            raise GhError(NOT_LOGGED_IN.format(url=self.connect_url) +
+            raise GhError(self.not_logged_in() +
                           "\n\n(gh, the GitHub CLI, is not installed on this Son.)") from None
         try:
             out, err = await asyncio.wait_for(proc.communicate(stdin), timeout=self.timeout)
@@ -556,6 +593,11 @@ class GhRunner:
             raise GhError(f"gh took longer than {int(self.timeout)} s and was stopped. Narrow the request "
                           "(smaller --limit, a specific number, or a narrower API path) and retry.") from None
         return proc.returncode or 0, out.decode("utf-8", "replace"), err.decode("utf-8", "replace")
+
+    def not_logged_in(self) -> str:
+        if self.name:
+            return NOT_LOGGED_IN_NAMED.format(name=self.name, url=self.connect_url)
+        return NOT_LOGGED_IN.format(url=self.connect_url)
 
     def _cap(self, s: str, what: str) -> str:
         if len(s) <= self.max_chars:
@@ -574,6 +616,6 @@ class GhRunner:
             return True, self._cap(out if out else err, "the output")
         msg = (err.strip() or out.strip() or f"gh exited with code {code}")
         if _no_login(err + out, code):
-            return False, self._cap(f"{NOT_LOGGED_IN.format(url=self.connect_url)}\n\ngh said (exit {code}):\n{msg}", "the error")
+            return False, self._cap(f"{self.not_logged_in()}\n\ngh said (exit {code}):\n{msg}", "the error")
         return False, self._cap(f"gh {' '.join(argv[:2])} failed (exit {code}):\n{msg}\n\nNext step: {_hint(err + out, code)}",
                                 "the error")

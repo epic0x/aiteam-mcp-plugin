@@ -10,6 +10,9 @@ Claude plugin 0.1.10. Relay changes need a relay redeploy; the connector change 
 ### relay: Code Mode
 - `RELAY_CODE_MODE=on` adds `search`, `describe` and `execute`: one JavaScript snippet runs over every box in the connection and only its result comes back. Snippets run in a separate sandbox process and can only use read-only tools. Needs Node 25 or later: at start the relay checks that the sandbox is refused network, file, process and worker access, and offers the code tools only when it is. Off by default. See docs/RELAY.md, Code Mode.
 
+### relay: "Available on" in tool descriptions
+- A box that has not listed its tools yet (cold, slow or failing, with no earlier list) no longer makes every other box's tool say "Available on: <the boxes that answered>". The line is left out until every box's list is known; a box that answered before keeps serving its last list while it reloads.
+
 ### relay: token exchange
 - Each POST to the token route waits up to `RELAY_EXCHANGE_TIMEOUT` seconds (25), at most `RELAY_EXCHANGE_SLOTS` (2) run at once per relay, and busy or failed answers are retried with a short backoff. Box tool lists are cached per connection; time limits come from the environment (docs/RELAY.md, Environment).
 - With `RELAY_MULTI_BOX=on`, a single-box connection keeps working when `/oauth/targets` fails: it falls back to the plain exchange. Scoped connections fail closed.
@@ -18,6 +21,8 @@ Claude plugin 0.1.10. Relay changes need a relay redeploy; the connector change 
 - `RELAY_ISSUER_HEADERS_FILE` (off by default): extra headers, such as an access gate's service token, sent only on the relay's own calls to the issuer. See docs/RELAY.md, Issuer behind an access gate.
 
 ### connector
+- `github_search` passes each term of the query to `gh` as its own argument, so `org:acme widget` searches the org for `widget` instead of becoming the invalid `org:"acme widget"`. Double quotes still group a phrase (`"rate limit"`, `label:"good first issue"`). An empty query is refused.
+- When `gh` on a Son is not logged in, the answer names the Son (`github.name` in the config, else the Son the connector serves) next to the connect link.
 - `son_list` on a box without the `/v1/sons` route (older or hand-built boxes) no longer reports the Son offline: it checks the box's AI status route instead and says so in `via` and `note`.
 
 ## v0.1.9 (2026-11-08): coordinator briefs, team board, model controls
