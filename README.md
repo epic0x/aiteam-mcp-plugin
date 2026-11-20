@@ -228,6 +228,7 @@ https://aiteam.space/pricing. Map: [docs/ENTITLEMENTS.md](docs/ENTITLEMENTS.md).
   | `RELAY_CODE_MODE` | `off` | `on`: adds `search`, `describe` and `execute` (needs `RELAY_MULTI_BOX=on` and Node 25+; stays off with a log line if the sandbox check fails) |
   | `RELAY_NODE` | `node` on `PATH` | Code Mode: path to the Node 25+ binary that runs the sandbox, for example `/opt/node26/bin/node` |
   | `RELAY_EXCHANGE_SLOTS` | `2` | token exchanges in flight at once per relay process, all connections and boxes together; raise it (for example to `8`) when many boxes connect at once |
+  | `RELAY_EXCHANGE_CONCURRENCY` | unset | the same setting under its newer name, read only when `RELAY_EXCHANGE_SLOTS` is unset (`RELAY_EXCHANGE_SLOTS` wins when both are set) |
 - **Docs:** [UNIFIED-CONNECTOR](docs/UNIFIED-CONNECTOR.md) · [AI-CONTROL](docs/AI-CONTROL.md) ·
   [MODEL-CONTROL](docs/MODEL-CONTROL.md) · [GATEWAY-CONTROLS](docs/GATEWAY-CONTROLS.md) · [TOOLS](docs/TOOLS.md) ·
   [HEALTH](docs/HEALTH.md) · [DISCORD-THREADS](docs/DISCORD-THREADS.md) · [TELEGRAM-TOPICS](docs/TELEGRAM-TOPICS.md) ·
