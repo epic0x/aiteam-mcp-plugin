@@ -139,3 +139,14 @@ def test_no_allow_list_keeps_full_parity(toolbox, monkeypatch):
     tb, _, _ = toolbox
     monkeypatch.setattr(tb, "_config", lambda: {})
     assert {"terminal", "read_file", "cronjob_manage"} <= set(tb.register(FakeServer()))
+
+
+def test_results_carry_structured_json_and_read_only_tools_are_idempotent(toolbox):
+    tb, _, _ = toolbox
+    srv = FakeServer()
+    tb.register(srv)
+    listed = {t.name: t for t in asyncio.run(srv.list_tools())}
+    assert listed["read_file"].annotations.idempotent_hint is True
+    assert listed["terminal"].annotations.idempotent_hint is None  # a shell command is not safe to repeat
+    r = asyncio.run(srv.call_tool("terminal", {"command": "echo hi"}))
+    assert r.structured_content == json.loads(r.content[0].text)  # same JSON in both

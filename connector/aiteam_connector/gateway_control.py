@@ -21,9 +21,11 @@ def control_tools(sons: list[str]) -> list[types.Tool]:
         ("son_approvals_set", "Set smart or yolo approval mode", "Explicit persistent profile policy: smart maps to native smart; yolo maps to native off (bypasses approval prompts). Requires a configured owner platform binding and native admin permission. Existing session-yolo overrides are NOT cleared. Never toggles /yolo implicitly.",
          {"mode": {"type": "string", "enum": ["smart", "yolo"]}}, ["mode"], True, True),
     ]
-    return [types.Tool(name=name, title=title, description=description,
+    # One of sessionKey / sessionId is required. Not as a root anyOf: clients that run code over tools refuse a
+    # schema with anyOf / oneOf / allOf at the root. build_control_request checks it instead.
+    return [types.Tool(name=name, title=title, description=description + " Give sessionKey or sessionId.",
             inputSchema={"type": "object", "properties": {**common, **props}, "required": required,
-                         "anyOf": [{"required": ["sessionKey"]}, {"required": ["sessionId"]}], "additionalProperties": False},
+                         "additionalProperties": False},
             annotations=types.ToolAnnotations(title=title, readOnlyHint=False, destructiveHint=destructive,
                                               idempotentHint=idem, openWorldHint=True))
             for name, title, description, props, required, destructive, idem in definitions]
@@ -31,6 +33,7 @@ def control_tools(sons: list[str]) -> list[types.Tool]:
 
 def build_control_request(name: str, args: dict) -> tuple[str, dict]:
     schema = next(t.inputSchema for t in control_tools(["local"]) if t.name == name)
+    schema = {**schema, "anyOf": [{"required": ["sessionKey"]}, {"required": ["sessionId"]}]}
     try:
         validate(args, schema)
     except ValidationError:

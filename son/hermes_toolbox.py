@@ -270,8 +270,10 @@ def _status_def() -> Dict[str, Any]:
 def _annotations(name: str):
     import mcp_types as T  # mcp>=2
     ro = name in READ_ONLY
+    # read-only = safe to repeat: clients run these in parallel and retry them once after a dropped connection
     return T.ToolAnnotations(title=name.replace("_", " ").capitalize(), read_only_hint=ro,
-                             destructive_hint=(name in DESTRUCTIVE), open_world_hint=not ro)
+                             destructive_hint=(name in DESTRUCTIVE), idempotent_hint=True if ro else None,
+                             open_world_hint=not ro)
 
 
 def register(mcp, toolbox: Optional[Toolbox] = None) -> List[str]:
@@ -319,12 +321,16 @@ def register(mcp, toolbox: Optional[Toolbox] = None) -> List[str]:
         if not isinstance(out, str):
             out = json.dumps(out, default=str)
         is_err = False
+        data = None
         try:
             j = json.loads(out)
             is_err = isinstance(j, dict) and (j.get("success") is False or (bool(j.get("error")) and "output" not in j))
+            data = j if isinstance(j, dict) else {"value": j}
         except Exception:
-            pass
-        return T.CallToolResult(content=[T.TextContent(type="text", text=out)], is_error=is_err)
+            data = {"text": out}
+        # JSON in structured content and the same JSON as text, so code that calls the tool can read the result
+        return T.CallToolResult(content=[T.TextContent(type="text", text=out)], structured_content=data,
+                                is_error=is_err)
 
     mcp.list_tools, mcp.call_tool = list_tools, call_tool
     logger.info("MCP toolbox: %d Hermes tools exposed", len(defs))
