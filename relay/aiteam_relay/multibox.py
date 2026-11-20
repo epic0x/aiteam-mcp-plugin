@@ -43,12 +43,65 @@ FANOUT_TOOLS = {"kanban_list": "kanban_list", "kanban_read": "kanban_read", "mem
 MAX_FANOUT_BYTES = 256 * 1024  # whole fan-out answer
 MAX_MEDIA_BYTES = 2 * 1024 * 1024  # inline media; the MCP request body itself is capped at 4 MB
 NOT_IN_CONNECTION = "box not in this connection"
+MAX_DESCRIPTION = 4096  # clients cut longer tool descriptions and server instructions (Claude Code: 4,096 characters)
+BIG_RESULT = 300_000  # anthropic/maxResultSizeChars for answers capped at 256 KB (fan-outs, boxes_list, execute)
 INSTRUCTIONS = (
     "This connection reaches one or more aiteam.space boxes. Call boxes_list to see them and whether each one is up. "
     "Every tool takes a `box` argument (the box name from boxes_list); with a single box it can be left out. "
     "kanban_list, kanban_read and memory_read also take box=\"all\" to read every box at once. calendar_post adds a "
     "post to a content calendar for review; it never publishes."
 )
+CODE_MODE_NOTE = (
+    " Code Mode: search finds API methods and box tools by words, describe gives their input, and execute runs one "
+    "JavaScript snippet here, over many boxes in one round trip (read-only tools only, 50 s in total). Clients without "
+    "their own Code Mode (Claude.ai, Claude Desktop, ChatGPT) should use execute for multi-step reads. In Claude Code "
+    "with its Code Mode on, the script it writes can also call these tools directly by their MCP names; use execute "
+    "when one call over many boxes is cheaper than many calls from your side. execute never writes: writes are their "
+    "own tool calls."
+)
+
+
+def instructions(code_mode: bool) -> str:
+    return INSTRUCTIONS + (CODE_MODE_NOTE if code_mode else "")
+
+
+def schema_obj(props: dict, required: list[str] | None = None) -> dict:
+    s = {"type": "object", "properties": props}
+    if required:
+        s["required"] = required
+    return s
+
+
+# Output schemas for the relay's own read tools. Every answer that is not an error carries structuredContent of this
+# shape and the same JSON as text (after a one-line summary), so code reads fields and older clients read text.
+_ROW = {"type": "object", "properties": {"box": {"type": "string"}, "ok": {"type": "boolean"},
+                                         "error": {"type": "string"}, "truncated": {"type": "boolean"}}}
+BOXES_LIST_OUT = schema_obj({
+    "scope_rule": {"type": ["string", "null"]}, "project_name": {"type": ["string", "null"]},
+    "count": {"type": "integer"}, "truncated": {"type": "boolean"},
+    "boxes": {"type": "array", "items": {**_ROW, "properties": {
+        **_ROW["properties"], "kind": {"type": "string"}, "name": {"type": ["string", "null"]},
+        "calendar": {"type": "boolean"}, "health": {}}}}}, ["count", "boxes"])
+FANOUT_OUT = {"type": "object", "description": "box=\"all\": {box, results: [{box, ok, data | error}], truncated}. "
+              "One box: that box's own answer as an object (a list comes as {items: [...]}).",
+              "properties": {"box": {"type": "string"}, "truncated": {"type": "boolean"},
+                             "results": {"type": "array", "items": {**_ROW, "properties": {**_ROW["properties"],
+                                                                                           "data": {}}}}}}
+
+
+def as_object(r: types.CallToolResult) -> types.CallToolResult:
+    """Give a box's answer structuredContent (an object) when it has none, from its JSON text: a list becomes
+    {items: [...]}, plain text {text: ...}. The text content is left as it is. Errors pass through unchanged."""
+    if r.isError or isinstance(r.structuredContent, dict):
+        return r
+    texts = [c.text for c in r.content if isinstance(c, types.TextContent)]
+    joined = "\n".join(texts)
+    try:
+        v = json.loads(joined)
+    except ValueError:
+        v = None
+    obj = v if isinstance(v, dict) else ({"items": v} if isinstance(v, list) else {"text": joined})
+    return r.model_copy(update={"structuredContent": obj})
 
 
 @dataclass(frozen=True)
@@ -129,6 +182,14 @@ def box_prop(keys: list[str], *, allow_all: bool = False, what: str = "box") -> 
     return {"type": "string", "enum": enum, "description": desc}
 
 
+def cap_description(desc: str, tail: str = "") -> str:
+    """`desc` + `tail` within MAX_DESCRIPTION characters; the start of `desc` (its key words) and all of `tail` stay."""
+    room = MAX_DESCRIPTION - len(tail)
+    if len(desc) > room:
+        desc = desc[:max(0, room - 3)].rstrip() + "..."
+    return desc + tail
+
+
 def with_box(tool: types.Tool, keys: list[str], have: list[str] | None) -> types.Tool:
     """`have` = the boxes that list this tool, or None when some box's list is unknown (it never answered and has no
     earlier list): then no "Available on" line, since a box that did not answer may well have the tool."""
@@ -144,9 +205,10 @@ def with_box(tool: types.Tool, keys: list[str], have: list[str] | None) -> types
     else:
         schema.pop("required", None)
     desc = tool.description or ""
+    tail = ""
     if have is not None and len(keys) > 1 and set(have) != set(keys):
-        desc = (desc + "\n\n" if desc else "") + "Available on: " + ", ".join(have)
-    return tool.model_copy(update={"inputSchema": schema, "description": desc})
+        tail = ("\n\n" if desc else "") + "Available on: " + ", ".join(have)
+    return tool.model_copy(update={"inputSchema": schema, "description": cap_description(desc, tail)})
 
 
 def native_tools(t: Targets, per_box: float = 10.0) -> list[types.Tool]:
@@ -161,13 +223,15 @@ def native_tools(t: Targets, per_box: float = 10.0) -> list[types.Tool]:
     if cals:
         cal_prop["enum"] = cals
     return [
-        types.Tool(name="boxes_list", title="Boxes in this connection",
+        types.Tool(name="boxes_list", title="Boxes in this connection", outputSchema=BOXES_LIST_OUT,
+                   _meta={"anthropic/maxResultSizeChars": BIG_RESULT},
                    description="Every box this connection reaches (name, kind, project, whether it is a content "
                                f"calendar) and a live health check of each, {per_box:g} s per box. A box that does "
                                "not answer shows ok=false with the reason; the others still answer.",
                    inputSchema={"type": "object", "properties": {}, "additionalProperties": False},
                    annotations=ro("Boxes in this connection")),
-        types.Tool(name="kanban_list", title="List task boards",
+        types.Tool(name="kanban_list", title="List task boards", outputSchema=FANOUT_OUT,
+                   _meta={"anthropic/maxResultSizeChars": BIG_RESULT},
                    description="Cards on a box's task board, read-only. box=\"all\" reads every box at once and "
                                f"groups the answer per box (ok/error per box, {per_box:g} s each).",
                    inputSchema={"type": "object", "additionalProperties": False,
@@ -177,7 +241,8 @@ def native_tools(t: Targets, per_box: float = 10.0) -> list[types.Tool]:
                                                             "pattern": "^[A-Za-z0-9_.@:-]{1,64}$"},
                                                "limit": lim(50, 200)}},
                    annotations=ro("List task boards")),
-        types.Tool(name="kanban_read", title="Read a task card",
+        types.Tool(name="kanban_read", title="Read a task card", outputSchema=FANOUT_OUT,
+                   _meta={"anthropic/maxResultSizeChars": BIG_RESULT},
                    description="One card from a box's task board, read-only. box=\"all\" asks every box for that "
                                "card id and groups the answers per box.",
                    inputSchema={"type": "object", "additionalProperties": False,
@@ -185,7 +250,8 @@ def native_tools(t: Targets, per_box: float = 10.0) -> list[types.Tool]:
                                 "properties": {"box": fan, "id": {"type": "string",
                                                                   "pattern": "^[A-Za-z0-9_.:-]{1,64}$"}}},
                    annotations=ro("Read a task card")),
-        types.Tool(name="memory_read", title="Search box memory",
+        types.Tool(name="memory_read", title="Search box memory", outputSchema=FANOUT_OUT,
+                   _meta={"anthropic/maxResultSizeChars": BIG_RESULT},
                    description="Read-only search of a box's shared memory. box=\"all\" searches every box and groups "
                                "the answers per box.",
                    inputSchema={"type": "object", "additionalProperties": False,
@@ -419,7 +485,7 @@ class Router:
                 r = await self.pool.call(c.token, c.exp, one, c.plain_exchange(t), FANOUT_TOOLS[name], fwd)
             except BoxError as e:
                 return _text(f"{one.key}: {e}")
-            return r
+            return as_object(r)  # the tool declares an output schema, so its answer is always an object
         plain = c.plain_exchange(t)
         self.warm(c, t)
 
@@ -506,7 +572,7 @@ def _intro():
 
 
 def build_server(router: Router) -> Server:
-    server = Server("aiteam-relay", version=__version__, instructions=INSTRUCTIONS)
+    server = Server("aiteam-relay", version=__version__, instructions=instructions(router.code is not None))
 
     def caller() -> Caller:
         req = server.request_context.request

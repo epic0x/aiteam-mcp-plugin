@@ -38,6 +38,14 @@ claude mcp add --transport http aiteam https://mcp.aiteam.space/mcp
 ```
 Then run `/mcp` in Claude Code and sign in.
 
+**Code Mode in Claude Code.** Claude Code v2.1.323 and later can write one script that calls these tools, instead of
+one tool call per step: start it with `CLAUDE_CODE_EXPERIMENTAL_CODE_MODE=1 claude`, or set that variable in
+`~/.claude/settings.json`. Nothing to change on the aiteam side. Every tool says whether it only reads or changes
+something, big answers say how large they may get, and each call in the script still goes through your permission
+rules. The hosted connection also has its own `execute` tool, which runs one read-only snippet over all your boxes
+on the server in one step; clients without Code Mode (Claude.ai, Claude Desktop, ChatGPT) use that. Details:
+[docs/RELAY.md, Code Mode](docs/RELAY.md#code-mode).
+
 **Claude plugin (connector + skill in one install):** plugin path [`claude-plugin/`](claude-plugin/).
 
 **ChatGPT**

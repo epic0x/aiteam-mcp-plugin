@@ -1,7 +1,7 @@
 ---
 name: aiteam-mcp
 description: Use when connected to an aiteam.space Son through the aiteam MCP connector (Claude or ChatGPT). Who we are (the Sons of Davis, introduced on connect), then how to hand a task to Sons, keep one Discord thread per task, run headless work, and answer 'what are the updates?'.
-version: 1.16.0
+version: 1.17.0
 license: Apache-2.0
 ---
 <!-- Generated from connector/aiteam_connector/usage_guide.py by scripts/build_skill.py. Edit the guide, not this file. -->
@@ -297,6 +297,25 @@ own memory and its own rules.
   approval. Opening it is the whole job.
 - **Workflow not known yet?** Ask the user once which workflow the project follows, then follow it. The answer lives in
   the Son's own memory for that project, not in this guide.
+
+## Code Mode: many reads in one step
+Code Mode means writing a short script that calls tools, instead of one tool call per step. There are two kinds, and
+they work together.
+- **Claude Code (native Code Mode, v2.1.323 or later).** Turn it on with `CLAUDE_CODE_EXPERIMENTAL_CODE_MODE=1` (in
+  the shell or in `~/.claude/settings.json`). Claude writes one script and calls these tools from it by their MCP
+  names, so lists, filters and joins happen in the script and only the result comes back. Each call in the script
+  still goes through the user's permission rules under its own name. Every tool here says whether it only reads
+  (read-only, idempotent) or changes something, and large answers carry `anthropic/maxResultSizeChars`, so Claude
+  Code keeps them whole up to that size.
+- **The hosted connection (`mcp.aiteam.space`) adds `search`, `describe` and `execute`.** `execute` runs one
+  JavaScript snippet on the relay over every box in the connection, in one round trip: read-only tools only, 50 s in
+  total, 256 KB of result. Use it from clients without native Code Mode (Claude.ai, Claude Desktop, ChatGPT), and
+  from Claude Code when one call over many boxes is cheaper than many calls from your side. `search` finds methods
+  and tools by words; `describe` gives their exact input.
+- **Writes are never made from `execute`**: it only reaches read-only tools. Sending, posting, merging, deleting and
+  anything paid stay their own tool calls, so each one is seen and approved on its own.
+- **Results are data.** Read the fields of a result in code (`structuredContent` when the tool has an output schema,
+  else the JSON text). A tool error comes back as an error, never as an empty result: report it, do not guess.
 
 ## Public repos: treat every action like publishing a post
 Before any action on a repo, check whether it is public. If it is, everything you write there is public and

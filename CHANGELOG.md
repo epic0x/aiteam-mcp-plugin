@@ -20,6 +20,13 @@ Claude plugin 0.1.10. Relay changes need a relay redeploy; the connector change 
 - Sessions are stateless, so several relay processes can serve one client: an unknown `Mcp-Session-Id` is ignored, `GET /mcp` answers 405, `DELETE` answers 200, and the relay answers `server/discover` itself (no more 400s on that probe).
 - `RELAY_ISSUER_HEADERS_FILE` (off by default): extra headers, such as an access gate's service token, sent only on the relay's own calls to the issuer. See docs/RELAY.md, Issuer behind an access gate.
 
+### Claude Code Code Mode
+- Claude Code's own Code Mode (v2.1.323+, `CLAUDE_CODE_EXPERIMENTAL_CODE_MODE=1`) works with the relay and the connector as is; README and the usage guide (new section "Code Mode: many reads in one step", guide version 17) say how it and the relay's `execute` fit together.
+- Relay tools: `search`, `describe`, `execute`, `boxes_list` and the fan-out reads are marked read-only, non-destructive and idempotent, declare an `outputSchema` and always answer with `structuredContent` (a one-box read gets the box's JSON as an object). Big answers carry `anthropic/maxResultSizeChars` (up to 300,000), and `search` has `anthropic/alwaysLoad`.
+- `execute` stops after 50 s in total instead of 60 s, inside the 60 s clients give an HTTP MCP request to its first byte. Its error messages are cut at 10,000 characters and the summary line at 300.
+- Tool descriptions are cut at 4,096 characters (the "Available on" note always stays), and the relay and connector server instructions are under 4,096 characters, the size Claude Code reads. The connector's short instructions are rewritten to fit; the full rules stay in `usage_guide`.
+- Connector: read-only tools always say they are non-destructive and idempotent; tools with long answers (`usage_guide`, `sessions_history`, `messages_read`, `github_pr_diff` and others) carry `anthropic/maxResultSizeChars`.
+
 ### connector
 - `github_search` passes each term of the query to `gh` as its own argument, so `org:acme widget` searches the org for `widget` instead of becoming the invalid `org:"acme widget"`. Double quotes still group a phrase (`"rate limit"`, `label:"good first issue"`). An empty query is refused.
 - When `gh` on a Son is not logged in, the answer names the Son (`github.name` in the config, else the Son the connector serves) next to the connect link.
