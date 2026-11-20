@@ -1,6 +1,7 @@
 # Changelog
 
-## Unreleased
+## v0.1.10 (2026-11-20): relay with multiple boxes and Code Mode
+Claude plugin 0.1.10. Relay changes need a relay redeploy; the connector change needs a box update.
 
 ### relay: multiple boxes per connection
 - `RELAY_MULTI_BOX=on` turns the relay into its own MCP server over every box in the connection. Each box tool gets a `box` argument; each call is exchanged for a short token for that one box. Off by default.
@@ -8,6 +9,13 @@
 
 ### relay: Code Mode
 - `RELAY_CODE_MODE=on` adds `search`, `describe` and `execute`: one JavaScript snippet runs over every box in the connection and only its result comes back. Snippets run in a separate sandbox process and can only use read-only tools. Needs Node 25 or later: at start the relay checks that the sandbox is refused network, file, process and worker access, and offers the code tools only when it is. Off by default. See docs/RELAY.md, Code Mode.
+
+### relay: token exchange
+- Each POST to the token route waits up to `RELAY_EXCHANGE_TIMEOUT` seconds (25), at most `RELAY_EXCHANGE_SLOTS` (2) run at once per relay, and busy or failed answers are retried with a short backoff. Box tool lists are cached per connection; time limits come from the environment (docs/RELAY.md, Environment).
+- With `RELAY_MULTI_BOX=on`, a single-box connection keeps working when `/oauth/targets` fails: it falls back to the plain exchange. Scoped connections fail closed.
+
+### connector
+- `son_list` on a box without the `/v1/sons` route (older or hand-built boxes) no longer reports the Son offline: it checks the box's AI status route instead and says so in `via` and `note`.
 
 ## v0.1.9 (2026-11-08): coordinator briefs, team board, model controls
 Claude plugin 0.1.9 (re-validate in the Claude directory) and ChatGPT package 0.1.9 (new ZIP from the `v0.1.9` tag).

@@ -66,6 +66,11 @@ Logs: no tokens, no full upstream URLs (only the Son host name). The `httpx` log
 | `RELAY_FANOUT_TIMEOUT` | `10` | multi-box: seconds per box in `boxes_list` and in `box="all"` reads |
 | `RELAY_LIST_TIMEOUT` | `25` | multi-box: the longest one `tools/list` answer waits for boxes whose list is not cached yet |
 | `RELAY_TOOLS_TTL` | `300` | multi-box: seconds a box's cached tool list counts as fresh |
+| `RELAY_EXCHANGE_SLOTS` | `2` | token exchanges in flight at once per process, all connections and boxes together |
+| `RELAY_EXCHANGE_TIMEOUT` | `25` | seconds one POST to the issuer's token route may take (the issuer allows itself up to 20 s) |
+| `RELAY_CODE_MODE` | `off` | `on` = add `search`, `describe` and `execute` (needs `RELAY_MULTI_BOX=on`; see Code Mode) |
+| `RELAY_NODE` | `node` on `PATH` | Code Mode: the Node 25+ binary that runs the sandbox |
+| `RELAY_SANDBOX_DIR` | `relay/sandbox` | Code Mode: the sandbox folder (after `npm ci`); the only folder the sandbox may read |
 
 Time values are seconds (decimals allowed), above 0 and at most 3600. Anything else keeps the default and logs a
 warning.

@@ -125,6 +125,30 @@ async def test_mcp_connector_end_to_end(stack):
         assert r.isError
 
 
+async def test_son_list_on_a_box_without_the_sons_route():
+    """A box with no /v1/sons (plain-text 404) is online when its AI status route answers, offline when not."""
+    async def ai_status(request):
+        if request.headers.get("Authorization") != f"Bearer {ALICE}":
+            return web.json_response({"error": "unauthorized"}, status=401)
+        return web.json_response({"providers": []})
+    app = web.Application()
+    app.router.add_get("/v1/ai/status", ai_status)
+    runner, url = await start(app)
+    try:
+        for token, online in ((ALICE, True), (BOB, False)):
+            conn = Connector([SonLink("my-son", url, token)], passthrough="none")
+            async with create_connected_server_and_client_session(build_server(conn)) as client:
+                r = await client.call_tool("son_list", {})
+            row = json.loads(r.content[0].text)["sons"][0]
+            assert row["online"] is online, row
+            if online:
+                assert row["via"] == "ai_status" and "HTTP 404" in row["note"]
+            else:
+                assert row["error"] == "/v1/sons HTTP 404, /v1/ai/status HTTP 401"
+    finally:
+        await runner.cleanup()
+
+
 async def test_connector_reports_box_refusal(stack):
     fake, box_url = stack
     conn = Connector([SonLink("my-son", box_url, BOB)], passthrough="none")

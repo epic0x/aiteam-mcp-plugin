@@ -1022,6 +1022,16 @@ class Connector:
             s = self.sons[n]
             try:
                 r = await self.http.get(f"{s.box_url}/v1/sons", headers=self._h(s), timeout=10)
+                if r.status_code == 404 or "json" not in r.headers.get("content-type", ""):
+                    # An older or hand-built box has no /v1/sons route: a plain 404 means "route missing", not
+                    # "offline". Its authenticated AI status route is the liveness check instead.
+                    a = await self.http.get(f"{s.box_url}/v1/ai/status", headers=self._h(s), timeout=25)
+                    ok = a.status_code == 200 and "json" in a.headers.get("content-type", "")
+                    out.append({"son": n, "online": True, "version": None, "via": "ai_status",
+                                "note": f"/v1/sons missing on that box (HTTP {r.status_code})"} if ok else
+                               {"son": n, "online": False,
+                                "error": f"/v1/sons HTTP {r.status_code}, /v1/ai/status HTTP {a.status_code}"})
+                    continue
                 hit = next((x for x in r.json().get("sons", []) if x.get("name") == n), None)
                 out.append({"son": n, "online": bool(hit and hit.get("ok")), "version": (hit or {}).get("version")})
             except Exception as e:  # noqa: BLE001
