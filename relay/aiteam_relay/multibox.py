@@ -129,7 +129,10 @@ def box_prop(keys: list[str], *, allow_all: bool = False, what: str = "box") -> 
     return {"type": "string", "enum": enum, "description": desc}
 
 
-def with_box(tool: types.Tool, keys: list[str], have: list[str]) -> types.Tool:
+def with_box(tool: types.Tool, keys: list[str], have: list[str], complete: bool = True) -> types.Tool:
+    """The box tool with a `box` argument. "Available on" is added only when the tool is on some boxes but not all,
+    and only when `complete` (every box's tool list is loaded): a box whose list is still loading would otherwise be
+    left off the line, and clients keep the description they were given."""
     schema = dict(tool.inputSchema or {"type": "object"})
     props = dict(schema.get("properties") or {})
     props["box"] = box_prop(keys)
@@ -142,7 +145,7 @@ def with_box(tool: types.Tool, keys: list[str], have: list[str]) -> types.Tool:
     else:
         schema.pop("required", None)
     desc = tool.description or ""
-    if len(keys) > 1 and set(have) != set(keys):
+    if complete and len(keys) > 1 and set(have) != set(keys):
         desc = (desc + "\n\n" if desc else "") + "Available on: " + ", ".join(have)
     return tool.model_copy(update={"inputSchema": schema, "description": desc})
 
@@ -315,7 +318,7 @@ class Router:
             rows = by_name[name]
             base = rows[0][1]
             have = [x.key for x, _ in rows]
-            merged = with_box(base, keys, have)
+            merged = with_box(base, keys, have, complete=not missing)
             merged = merged.model_copy(update={"annotations": _least_safe([tl.annotations for _, tl in rows])})
             out.append(merged)
         return out

@@ -700,6 +700,22 @@ async def test_hanging_box_list_is_bounded_then_appears(world, clock, monkeypatc
     assert took2 < 0.5  # served from the cache, no wait on box-b
 
 
+async def test_available_on_only_when_every_box_list_is_loaded(world, clock, monkeypatch):
+    """A box whose list is still loading must not be left off "Available on": the line waits for every list."""
+    world.b.list_delay = 1.0  # box-b's list lands after the first tools/list answered
+    old_limit(monkeypatch, 0.4)
+    env = {**SLOW, "RELAY_LIST_TIMEOUT": 0.4}
+    async with relay(world, clock, monkeypatch, box_timeout=None, env=env) as app, session(app, V3()) as s:
+        first = {t.name: t for t in (await s.list_tools()).tools}
+        await settle(app)
+        second = {t.name: t for t in (await s.list_tools()).tools}
+    assert "shared" in first and "Available on" not in (first["shared"].description or "")
+    assert "only_a" in first and "Available on" not in (first["only_a"].description or "")
+    assert "Available on" not in (second["shared"].description or "")  # on both boxes
+    assert second["only_a"].description.endswith("Available on: box-a")
+    assert second["only_b"].description.endswith("Available on: box-b")
+
+
 async def test_failing_box_keeps_last_good_list(world, clock, monkeypatch, caplog):
     import logging
     caplog.set_level(logging.INFO)
