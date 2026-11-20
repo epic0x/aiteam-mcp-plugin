@@ -81,6 +81,10 @@ class Settings:
     tools_ttl: float = field(default_factory=lambda: _seconds("RELAY_TOOLS_TTL", 300.0))
     # token exchanges in flight at once in this process, all connections and boxes together (exchange.py)
     exchange_concurrency: int = field(default_factory=lambda: _count("RELAY_EXCHANGE_CONCURRENCY", 2))
+    # one POST to the token route waits this long (the route gives its own storage up to 20 s)
+    exchange_timeout: float = field(default_factory=lambda: min(_seconds("RELAY_EXCHANGE_TIMEOUT", 25.0), 60.0))
+    # boxes asked at once in boxes_list and `all` reads
+    fanout_concurrency: int = field(default_factory=lambda: _count("RELAY_FANOUT_CONCURRENCY", 4))
     # Code Mode (codemode.py): search / describe / execute on top of the multi-box relay. Needs multi_box.
     code_mode: bool = field(default_factory=lambda: _env("RELAY_CODE_MODE", "off").lower() in ("on", "1", "true"))
     # extra headers on the relay's own calls to the issuer only (issuer_headers.py); unset = off
@@ -125,7 +129,8 @@ def create_app(settings: Settings | None = None, *, client: httpx.AsyncClient | 
         issuer_headers.install(http, s.issuer, issuer_headers.load(s.issuer_headers_file))
     keys = jwks or Jwks(s.issuer + "/oauth/jwks", http)
     exchanger = Exchanger(http, token_url=s.issuer + "/oauth/token", suffix=s.son_host_suffix,
-                          relay_host=s.relay_host, clock=clock, concurrency=s.exchange_concurrency)
+                          relay_host=s.relay_host, clock=clock, concurrency=s.exchange_concurrency,
+                          request_timeout=s.exchange_timeout)
     multi = None
     router = None
     if s.multi_box:
@@ -140,7 +145,8 @@ def create_app(settings: Settings | None = None, *, client: httpx.AsyncClient | 
             limits = dict(box_timeout=s.box_timeout, fanout_timeout=s.fanout_timeout, list_timeout=s.list_timeout)
         else:
             limits = dict(box_timeout=box_timeout, fanout_timeout=box_timeout, list_timeout=box_timeout)
-        pool = BoxPool(exchanger, transport=box_transport, clock=clock, tools_ttl=s.tools_ttl, **limits)
+        pool = BoxPool(exchanger, transport=box_transport, clock=clock, tools_ttl=s.tools_ttl,
+                       concurrency=s.fanout_concurrency, **limits)
         router = Router(targets, exchanger, pool, clock=clock, code_mode=s.code_mode, code_mode_opts=code_mode_opts)
         # Stateless: every HTTP request is authenticated and scoped on its own; no MCP session outlives a request.
         multi = StreamableHTTPSessionManager(app=build_server(router), json_response=False, stateless=True)

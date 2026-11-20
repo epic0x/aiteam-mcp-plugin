@@ -43,7 +43,8 @@ BACKOFF_MAX = 8.0
 RETRY_AFTER_MAX = 10.0
 COOL_DOWN = 5.0  # seconds a key is not sent again after its retries ran out on a busy answer
 DEFAULT_BUDGET = 30.0  # seconds, for a caller that gives no deadline
-REQUEST_TIMEOUT = 10.0
+# one POST to the token route; above the route's own 20 s storage wait (env RELAY_EXCHANGE_TIMEOUT)
+REQUEST_TIMEOUT = 25.0
 BUSY = (429, 503)
 RETRY_ONCE = (500, 502, 504)
 
@@ -142,13 +143,15 @@ class _Flight:
 class Exchanger:
     def __init__(self, client: httpx.AsyncClient, *, token_url: str, suffix: str, relay_host: str,
                  clock: Callable[[], float] = time.time, concurrency: int = CONCURRENCY,
-                 sleep: Callable[[float], Awaitable[None]] = asyncio.sleep) -> None:
+                 sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
+                 request_timeout: float = REQUEST_TIMEOUT) -> None:
         self.client = client
         self.token_url = token_url
         self.suffix = suffix
         self.relay_host = relay_host
         self.clock = clock
         self.concurrency = max(1, int(concurrency))
+        self.request_timeout = float(request_timeout)
         self.sleep = sleep
         self.cache: dict[str, Exchanged] = {}
         self.calls = 0  # exchanges sent (tests, metrics)
@@ -252,7 +255,7 @@ class Exchanger:
             left = fl.deadline - loop.time()
             if left <= 0:
                 raise ExchangeError("token endpoint: no time left for this exchange")
-            return await self._exchange(subject_token, self.clock(), extra, timeout=min(REQUEST_TIMEOUT, left))
+            return await self._exchange(subject_token, self.clock(), extra, timeout=min(self.request_timeout, left))
 
     async def _exchange(self, subject_token: str, now: float, extra: dict[str, str] | None = None, *,
                         timeout: float = REQUEST_TIMEOUT) -> Exchanged:

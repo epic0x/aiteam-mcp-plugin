@@ -67,6 +67,8 @@ Logs: no tokens, no full upstream URLs (only the Son host name). The `httpx` log
 | `RELAY_LIST_TIMEOUT` | `25` | multi-box: the longest one `tools/list` answer waits for boxes whose list is not cached yet |
 | `RELAY_TOOLS_TTL` | `300` | multi-box: seconds a box's cached tool list counts as fresh |
 | `RELAY_EXCHANGE_CONCURRENCY` | `2` | token exchanges in flight at once per process, all connections and boxes together (1 to 64) |
+| `RELAY_EXCHANGE_TIMEOUT` | `25` | seconds one token exchange POST waits (capped at 60 and at the caller's deadline) |
+| `RELAY_FANOUT_CONCURRENCY` | `4` | multi-box: boxes asked at once in `boxes_list` and `all` reads (1 to 64) |
 | `RELAY_ISSUER_HEADERS_FILE` | unset (off) | file of extra headers for the relay's own calls to the issuer only, for an issuer behind an access gate (see Issuer behind an access gate) |
 
 Time values are seconds (decimals allowed), above 0 and at most 3600. Anything else keeps the default and logs a
@@ -152,7 +154,7 @@ relay keeps each box's tool list in memory, per process:
 
 ### Limits
 - 50 boxes per connection. Anything after that is dropped and `boxes_list` reports `truncated`.
-- 8 boxes asked at once per fan-out, `RELAY_FANOUT_TIMEOUT` (10 s) per box for `boxes_list` and `all` reads, so one
+- 4 boxes asked at once per fan-out (`RELAY_FANOUT_CONCURRENCY`), `RELAY_FANOUT_TIMEOUT` (10 s) per box for `boxes_list` and `all` reads, so one
   dead box never holds a fan-out answer for long. A box that is down shows `ok: false`; the other boxes still answer.
 - Loading a tool list: `RELAY_BOX_TIMEOUT` (30 s) per box, 32 loads at once per process, their token exchanges at
   most `RELAY_EXCHANGE_CONCURRENCY` (2) at once (see Token exchange). A box never listed before
