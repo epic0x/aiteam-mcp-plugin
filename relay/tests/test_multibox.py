@@ -440,6 +440,28 @@ async def test_slow_box_times_out_others_answer(world, clock, monkeypatch):
     assert "only_a" in tools and "only_b" not in tools  # a box never loaded is left out until its list arrives
 
 
+async def test_box_that_stops_answering_keeps_its_last_list(world, clock, monkeypatch):
+    """A box that answered once and then goes slow (restart, busy) keeps its tools and the "Available on" line;
+    a box that never answered makes the relay drop "Available on" rather than claim the tool is elsewhere only."""
+    async with relay(world, clock, monkeypatch, box_timeout=0.5) as app, session(app, V3()) as s:
+        first = {t.name: t for t in (await s.list_tools()).tools}
+        world.b.slow = 5
+        clock.t += 61  # past the 60 s list cache
+        later = {t.name: t for t in (await s.list_tools()).tools}
+    assert first["only_b"].description.endswith("Available on: box-b")
+    assert "only_b" in later and later["only_b"].description == first["only_b"].description
+    assert later["only_a"].description.endswith("Available on: box-a")
+
+
+async def test_unknown_box_list_drops_available_on(world, clock, monkeypatch):
+    world.b.slow = 5
+    async with relay(world, clock, monkeypatch, box_timeout=0.5) as app, session(app, V3()) as s:
+        tools = {t.name: t for t in (await s.list_tools()).tools}
+    assert "only_b" not in tools
+    assert "Available on" not in (tools["only_a"].description or "")
+    assert tools["only_a"].inputSchema["properties"]["box"]["enum"] == ["box-a", "box-b"]
+
+
 async def test_kanban_fanout_all_partial(world, clock, monkeypatch):
     async with relay(world, clock, monkeypatch) as app, session(app, V3()) as s:
         r = await s.call_tool("kanban_read", {"box": "all", "id": "c1"})
