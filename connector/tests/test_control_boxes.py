@@ -15,7 +15,7 @@ async def test_connector_stop_over_real_socket_has_verified_envelope(commands):
     root = _short_tmp()
     sock = root / "control.sock"
     server = await H.serve(control, sock)
-    conn = Connector([SonLink("dee", "http://unused.invalid", "unused")], "none", github=False,
+    conn = Connector([SonLink("box-a", "http://unused.invalid", "unused")], "none", github=False,
                      model_control={"socket": str(sock)})
     try:
         for name, extra in [("son_session_stop", {}), ("son_session_interrupt", {}), ("son_session_reset", {}),
@@ -40,7 +40,7 @@ async def test_two_authorized_boxes_route_model_changes_independently():
     roots, sockets, apps, conns = [], [], [], []
     states, links = {}, []
     try:
-        for name in ("dee", "davis"):
+        for name in ("box-a", "box-b"):
             root = _short_tmp()
             roots.append(root)
             sock = root / "control.sock"
@@ -63,8 +63,8 @@ async def test_two_authorized_boxes_route_model_changes_independently():
             assert not result.isError, result
             own = states[name][0].session_store.lookup_by_session_id("s1")
             assert own.model_override["provider"] == "anthropic-secondary"
-            if name == "dee":
-                assert states["davis"][0].session_store.lookup_by_session_id("s1").model_override is None
+            if name == "box-a":
+                assert states["box-b"][0].session_store.lookup_by_session_id("s1").model_override is None
         async with httpx.AsyncClient() as http:
             for link in links:
                 body = {"tool": "son_model_status", "args": {}}
