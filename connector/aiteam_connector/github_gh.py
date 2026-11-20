@@ -294,6 +294,40 @@ def _owner_ok(owner: str, allowed: Optional[set]) -> None:
                       f"'{owner}' is outside that list (setting github.allowed_owners on the Son's connector).")
 
 
+def split_query(q: str) -> list[str]:
+    """A search query as gh's own words, one argv item each.
+
+    gh quotes any item that holds a space, so the whole query as one item turns `org:x neon` into `org:"x neon"`
+    and finds nothing. Words split on whitespace; a double-quoted part stays one item with its quotes removed,
+    and gh quotes it again: `"exact phrase"` -> `exact phrase` -> "exact phrase", `label:"bug fix"` ->
+    `label:bug fix` -> label:"bug fix". An unclosed quote runs to the end of the query."""
+    out: list[str] = []
+    cur: list[str] = []
+    started = False
+    i, n = 0, len(q)
+    while i < n:
+        ch = q[i]
+        if ch == '"':
+            j = q.find('"', i + 1)
+            j = n if j < 0 else j
+            cur.append(q[i + 1:j])
+            started = True
+            i = j + 1
+            continue
+        if ch.isspace():
+            if started:
+                out.append("".join(cur))
+            cur, started = [], False
+            i += 1
+            continue
+        cur.append(ch)
+        started = True
+        i += 1
+    if started:
+        out.append("".join(cur))
+    return [w for w in out if w.strip()]
+
+
 def _api_owner(path: str) -> Optional[str]:
     """Owner a /repos/<o>/... or /orgs/<o>/... API path targets; None for anything else."""
     m = re.match(r"^/?(?:repos|orgs)/([^/?#]+)", path)
@@ -349,7 +383,7 @@ def _build(name: str, a: dict) -> tuple[list[str], Optional[bytes]]:
             raise GhError("kind must be issues, prs, repos, code or commits")
         argv = ["search", kind]
         _limit(argv, a), _json(argv, a)
-        return argv + ["--", _txt(a.get("query") or "")], None
+        return argv + ["--", *split_query(_txt(a.get("query") or ""))], None
     if name == "github_api":
         method = str(a.get("method") or "GET").upper()
         if method not in API_METHODS:
