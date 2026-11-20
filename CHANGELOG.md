@@ -1,6 +1,47 @@
 # Changelog
 
-## Unreleased
+## v0.1.10 (2026-11-20): one URL for every box, Code Mode, clients that run code
+Claude plugin 0.1.10 (re-validate in the Claude directory) and ChatGPT package 0.1.10 (new ZIP from the `v0.1.10` tag).
+The repo now carries the relay code that runs at `mcp.aiteam.space`.
+
+### clients that run their own Code Mode
+- Every tool carries correct hints: read-only tools are also idempotent, so a client runs them in parallel and repeats
+  them once after a dropped connection; writes are neither. `discord_api` is marked as a write.
+- Every result comes as JSON in `structuredContent` plus the same JSON as text, on the connector, the Son toolbox and
+  the relay (box results that come as text only are given structured content on the way through). `boxes_list`,
+  `search`, `describe` and `execute` declare an `outputSchema`.
+- `_meta["anthropic/maxResultSizeChars"]` (300,000) on tools with long answers (guides, history, search, diffs,
+  board and memory reads, `boxes_list`, the `all` reads, the code tools).
+- `_meta["anthropic/requiresUserInteraction"]` on the owner controls that change the Son (model, fallback, sessions,
+  approvals, slash commands) and on paid add-on tools: a person answers every call.
+- Schemas pass strict clients: no `anyOf` at the root of the session control tools (the session selector is checked
+  on the call instead). New tests run every tool through draft 2020-12, root combinators, property names, name and
+  description lengths.
+- `execute` stops at 50 s (was 60 s), under the 60 s a client waits for the first byte of an HTTP answer.
+- A request at a protocol revision the relay does not speak (`2026-07-28`) gets the spec's
+  `UnsupportedProtocolVersionError` with the supported revisions, so the client retries with one of them.
+- Server instructions, `execute` and the usage guide say: if your client runs Code Mode, call the box tools directly;
+  use `execute` when it doesn't. `search` and `execute` say "box tool" so a client's tool search keeps them apart from
+  its own tools.
+
+### usage guide v17
+- New section "Code Mode: one snippet instead of many calls": `search`, `describe`, `execute`, read-only from code,
+  the sandbox, limits, and the client's own Code Mode vs ours. The `aiteam-mcp` skill is regenerated.
+
+### fixes
+- `github_search` passes the query as separate words. `org:x neon` was sent as one argument, which `gh` quoted into
+  `org:"x neon"`, so it found nothing. Quoted phrases stay one word.
+- The relay's "Available on" line waits until every box's tool list is loaded. A box still loading was left off, so
+  a tool looked limited to the boxes that answered first.
+- Session controls work on shared group and thread sessions: the owner may stop, reset or steer a session someone
+  else opened in a shared chat, when the gateway authorizes the owner there. Another user's DM or per-user group
+  session stays refused.
+
+### relay
+- Token exchanges wait up to 25 s (`RELAY_EXCHANGE_TIMEOUT`, was 10 s), above the token route's own 20 s storage wait.
+- 4 boxes asked at once per fan-out (`RELAY_FANOUT_CONCURRENCY`, was 8).
+- Box token exchanges are paced, sessions are stateless with no 400s, and the relay can send access gate headers on
+  its own calls to the issuer.
 
 ### relay: multiple boxes per connection
 - `RELAY_MULTI_BOX=on` turns the relay into its own MCP server over every box in the connection. Each box tool gets a `box` argument; each call is exchanged for a short token for that one box. Off by default.

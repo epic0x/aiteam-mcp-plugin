@@ -126,3 +126,18 @@ def test_guide_covers_the_team_board():
                    "send the version you last read", "apply your change to that one", "do not overwrite it blindly"):
         assert phrase in g, phrase
     assert "(11) Team board" in INSTRUCTIONS and "board_update" in INSTRUCTIONS
+
+
+def test_guide_covers_code_mode_and_its_limits_match_the_relay():
+    g = GUIDE
+    assert "## Code Mode" in g
+    assert g.index("`search`") < g.index("`describe`") < g.index("`execute`")
+    assert "If your client runs Code Mode, call the box tools directly. Use `execute` when it doesn't" in g
+    assert "needs approval" in g and "read-only" in g
+    try:
+        from aiteam_relay import codemode
+    except ImportError:  # the relay package is tested on its own; the numbers below are pinned there too
+        return
+    lim = codemode.LIMITS
+    assert f"{lim['maxCalls']} method calls" in g and f"{lim['cpuMs'] // 1000} s of CPU" in g
+    assert f"{int(codemode.WALL_SECONDS)} s in total" in g and f"{codemode.MAX_CODE:,} characters of code" in g
