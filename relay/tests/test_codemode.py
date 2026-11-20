@@ -93,7 +93,50 @@ async def test_describe_method_and_box_tool(world, clock, monkeypatch):
     assert "error" in bad
 
 
+async def test_tools_carry_claude_code_hints_and_limits(world, clock, monkeypatch):
+    """Native Code Mode in Claude Code reads these: hints, result size, always-loaded search, and output schemas."""
+    from aiteam_relay.codemode import WALL_SECONDS
+    from aiteam_relay.multibox import CODE_MODE_NOTE, MAX_DESCRIPTION
+    async with relay(world, clock, monkeypatch) as app, session(app, V3()) as s:
+        init = await s.initialize()  # stateless relay: a second initialize answers the same
+        tools = {t.name: t for t in (await s.list_tools()).tools}
+    for n in ("search", "describe", "execute", "boxes_list", "kanban_list", "kanban_read", "memory_read"):
+        a, t = tools[n].annotations, tools[n]
+        assert a.readOnlyHint is True and a.destructiveHint is False and a.idempotentHint is True, n
+        assert t.outputSchema and t.outputSchema["type"] == "object", n
+        assert 50_000 < (t.meta or {})["anthropic/maxResultSizeChars"] <= 500_000, n
+    assert (tools["search"].meta or {}).get("anthropic/alwaysLoad") is True
+    assert all(len(t.description or "") <= MAX_DESCRIPTION for t in tools.values())
+    assert CODE_MODE_NOTE.strip() in init.instructions and len(init.instructions) <= 4096
+    assert WALL_SECONDS < 60  # answers before a client's 60 s first-byte timer
+
+
+async def test_code_mode_note_only_when_on(world, clock, monkeypatch):
+    from aiteam_relay.multibox import CODE_MODE_NOTE
+    async with relay(world, clock, monkeypatch, code="off") as app, session(app, V3()) as s:
+        init = await s.initialize()
+    assert CODE_MODE_NOTE.strip() not in (init.instructions or "")
+
+
+async def test_search_and_describe_answer_structured(world, clock, monkeypatch):
+    async with relay(world, clock, monkeypatch) as app, session(app, V3()) as s:
+        r = await s.call_tool("search", {"query": "kanban"})  # the client checks it against the output schema
+        d = await s.call_tool("describe", {"names": ["kanban.list"]})
+    assert not r.isError and r.structuredContent["results"]
+    assert not d.isError and d.structuredContent["results"][0]["kind"] == "method"
+
+
 # ---------------------------------------------------------------------------------------------------------- execute
+@needs_sandbox
+async def test_execute_answers_structured_and_long_errors_are_cut(world, clock, monkeypatch):
+    async with relay(world, clock, monkeypatch) as app, session(app, V3()) as s:
+        ok = await s.call_tool("execute", {"code": "return { n: (await boxes.list()).length }"})
+        bad = await s.call_tool("execute", {"code": 'throw new Error("x".repeat(30000))'})
+    assert not ok.isError and ok.structuredContent["ok"] is True and ok.structuredContent["value"] == {"n": 2}
+    assert bad.isError and len(bad.structuredContent["error"]) <= 10_000 + 10
+    assert len(bad.content[0].text) < 12_000
+
+
 @needs_sandbox
 async def test_execute_loops_over_boxes_one_result(world, clock, monkeypatch):
     code = """

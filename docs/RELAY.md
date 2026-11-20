@@ -265,8 +265,34 @@ API inside a snippet (one object argument each): `boxes.list`, `boxes.health`, `
   called as a plain tool, where the box's own approval rules apply. A loop can't get past this.
 
 ### Limits per run
-50 API calls, 10 s of CPU, 60 s in total (waiting on boxes included), 32 MB of memory, 256 KB result, 200 log lines,
-20,000 characters of code, 4 runs at once per relay.
+50 API calls, 10 s of CPU, 50 s in total (waiting on boxes included), 32 MB of memory, 256 KB result, 200 log lines,
+20,000 characters of code, 4 runs at once per relay. The 50 s keeps a run inside the 60 s that clients such as Claude
+Code give an HTTP MCP request to its first answer byte. Error messages are cut at 10,000 characters.
+
+### What clients read
+- Every relay tool is annotated: `search`, `describe`, `execute`, `boxes_list` and the `box="all"` reads are
+  read-only, non-destructive and idempotent; box tools keep the hints their box gives them.
+- They declare an `outputSchema` and answer with `structuredContent` of that shape, plus the same JSON as text
+  after a one-line summary, so a script reads fields and an older client reads text. A one-box read gets an object
+  too: the box's own JSON, a list as `{items: [...]}`, plain text as `{text: ...}`.
+- `_meta["anthropic/maxResultSizeChars"]` on the big answers (300,000 characters for `execute`, `boxes_list` and
+  the fan-outs; 200,000 for `describe`; 100,000 for `search`), so Claude Code keeps them inline instead of saving
+  them to a file past its 50,000-character default. `search` also has `anthropic/alwaysLoad`, so a client that
+  defers tools behind tool search still sees it.
+- Tool descriptions are cut at 4,096 characters (an `Available on:` note always stays) and the server
+  instructions stay under 4,096, the size Claude Code reads.
+
+### Native Code Mode (Claude Code)
+Claude Code v2.1.323 and later has its own Code Mode (`CLAUDE_CODE_EXPERIMENTAL_CODE_MODE=1`): Claude writes a script
+that calls MCP tools by name, on the user's machine, through the user's permission rules. It works with this relay
+as is: the script can call `boxes_list`, the `box="all"` reads, box tools, and `execute` itself. Both have a place:
+
+- Claude Code's script runs on the client: each tool call is one round trip to the relay, and writes go through
+  the user's own prompts and rules.
+- `execute` runs on the relay: one round trip for many box calls, read-only tools only. Clients without Code Mode
+  (Claude.ai, Claude Desktop, ChatGPT) get the same one-step reads this way.
+
+The server instructions say this when Code Mode is on here.
 
 ### Setup
 1. Install Node 25 or later on the relay host.

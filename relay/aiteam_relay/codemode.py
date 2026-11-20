@@ -47,7 +47,11 @@ RECHECK_SECONDS = 300.0  # while off, look again every 5 minutes (after npm ci, 
 NOT_READY = "Code Mode is not set up on this relay yet"
 LIMITS = {"memoryBytes": 32 << 20, "stackBytes": 512 << 10, "cpuMs": 10_000, "maxCalls": 50, "maxLogs": 200,
           "maxOutBytes": 256 << 10}
-WALL_SECONDS = 60.0  # whole run, waiting on boxes included
+# Whole run, waiting on boxes included. Clients give an HTTP MCP request about 60 s to its first answer byte (Claude
+# Code's per-request timer), and execute answers once, at the end, so a run must finish well inside that.
+WALL_SECONDS = 50.0
+MAX_ERROR = 10_000  # characters of an error message; clients cut longer ones
+RESULT_CHARS = 300_000  # anthropic/maxResultSizeChars: the 256 KB result plus logs, as JSON text
 MAX_CODE = 20_000
 MAX_LINE = 1 << 20  # one protocol line from the sandbox
 RUNS_AT_ONCE = 4
@@ -91,7 +95,7 @@ METHODS: dict[str, Method] = {m.name: m for m in [
 ]}
 
 INSTRUCTIONS = (
-    "Code Mode: write one JavaScript snippet for execute() instead of many tool calls. The snippet is the body of an "
+    "Run one JavaScript snippet over your boxes, server side, in one round trip, instead of many tool calls. The snippet is the body of an "
     "async function: use await, loops and filters, and `return` only what is needed. Globals: "
     + ", ".join(sorted({m.split('.')[0] for m in METHODS})) + " and console.log. Each method takes one object "
     "argument. No fetch, no require, no timers. Use search() and describe() to find methods and box tools first. "
@@ -100,25 +104,44 @@ INSTRUCTIONS = (
 )
 
 
+SEARCH_OUT = {"type": "object", "required": ["results"], "properties": {
+    "query": {"type": ["string", "null"]},
+    "results": {"type": "array", "items": {"type": "object", "properties": {
+        "name": {"type": "string"}, "kind": {"type": "string"}, "summary": {"type": "string"},
+        "boxes": {"type": "array", "items": {"type": "string"}}, "read_only": {"type": "boolean"}}}}}}
+DESCRIBE_OUT = {"type": "object", "required": ["results"], "properties": {
+    "results": {"type": "array", "items": {"type": "object", "properties": {
+        "name": {"type": "string"}, "kind": {"type": "string"}, "input": {"type": "object"},
+        "error": {"type": "string"}, "read_only": {"type": "boolean"}}}}}}
+EXECUTE_OUT = {"type": "object", "required": ["ok"], "properties": {
+    "ok": {"type": "boolean"}, "value": {"description": "what the snippet returned"},
+    "error": {"type": "string"}, "logs": {"type": "array", "items": {"type": "string"}},
+    "calls": {"type": "integer", "description": "API method calls the run made"}}}
+
+
 def code_tools() -> list[types.Tool]:
     ro = lambda title: types.ToolAnnotations(title=title, readOnlyHint=True, destructiveHint=False,  # noqa: E731
                                              idempotentHint=True, openWorldHint=False)
     return [
-        types.Tool(name="search", title="Find API methods and box tools",
+        types.Tool(name="search", title="Find API methods and box tools", outputSchema=SEARCH_OUT,
+                   # tool search defers the rest; this one is how a client finds them
+                   _meta={"anthropic/alwaysLoad": True, "anthropic/maxResultSizeChars": 100_000},
                    description="Searches the Code Mode API and every box's tools by words. Returns names and one "
                                "line each; call describe() for the full input.",
                    inputSchema={"type": "object", "additionalProperties": False, "required": ["query"],
                                 "properties": {"query": {"type": "string", "maxLength": 200},
                                                "limit": _LIM(20, 100)}},
                    annotations=ro("Find API methods and box tools")),
-        types.Tool(name="describe", title="Describe API methods or box tools",
+        types.Tool(name="describe", title="Describe API methods or box tools", outputSchema=DESCRIBE_OUT,
+                   _meta={"anthropic/maxResultSizeChars": 200_000},
                    description="Full input schema of the methods (for example kanban.list) or box tools (box/tool, "
                                "for example box-a/kanban_list) named.",
                    inputSchema={"type": "object", "additionalProperties": False, "required": ["names"],
                                 "properties": {"names": {"type": "array", "maxItems": 20,
                                                          "items": {"type": "string", "maxLength": 200}}}},
                    annotations=ro("Describe API methods or box tools")),
-        types.Tool(name="execute", title="Run a snippet over your boxes",
+        types.Tool(name="execute", title="Run a snippet over your boxes", outputSchema=EXECUTE_OUT,
+                   _meta={"anthropic/maxResultSizeChars": RESULT_CHARS},
                    description=INSTRUCTIONS,
                    inputSchema={"type": "object", "additionalProperties": False, "required": ["code"],
                                 "properties": {"code": {"type": "string", "maxLength": MAX_CODE,
@@ -129,6 +152,8 @@ def code_tools() -> list[types.Tool]:
 
 
 def _result(data: Any, *, error: bool = False, head: str = "") -> types.CallToolResult:
+    if isinstance(data, dict) and isinstance(data.get("error"), str) and len(data["error"]) > MAX_ERROR:
+        data = {**data, "error": data["error"][:MAX_ERROR] + " [cut]"}
     text = json.dumps(data, ensure_ascii=False)
     return types.CallToolResult(content=[types.TextContent(type="text", text=(head + "\n" + text) if head else text)],
                                 structuredContent=data if isinstance(data, dict) else {"value": data}, isError=error)
@@ -359,7 +384,8 @@ class CodeMode:
             except TimeoutError:
                 done = {"ok": False, "error": f"time limit reached ({self.wall:g} s in total)"}
         ok = bool(done.get("ok"))
-        head = "Done." if ok else f"Failed: {done.get('error')}"
+        err = str(done.get("error"))
+        head = "Done." if ok else "Failed: " + (err if len(err) <= 300 else err[:300] + "... (full error below)")
         return _result(done, error=not ok, head=head)
 
     async def _run(self, c: "Caller", code: str) -> dict:

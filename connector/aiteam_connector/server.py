@@ -1115,13 +1115,38 @@ class Connector:
 
 
 # --------------------------------------------------------------------------------------------- server
+MAX_DESCRIPTION = 4096  # Claude Code cuts longer tool descriptions loaded up front (and server instructions)
+# Readers whose answer is often longer than Claude Code's default 50,000 characters before it saves it to a file.
+BIG_RESULTS = {"usage_guide": 100_000, "sessions_history": 200_000, "son_conversation_history": 200_000,
+               "messages_read": 200_000, "github_pr_diff": 300_000, "github_run_view": 200_000,
+               "github_search": 200_000, "github_api": 200_000, "discord_threads_list": 100_000}
+
+
+def for_clients(tool: types.Tool) -> types.Tool:
+    """What clients read before they call a tool: descriptions within MAX_DESCRIPTION, full hints on read-only tools
+    (a read-only tool never deletes and is safe to repeat), and anthropic/maxResultSizeChars on big readers. A tool
+    that is not marked read-only keeps the hints it has: nothing here guesses that a write is safe."""
+    upd: dict = {}
+    desc = tool.description or ""
+    if len(desc) > MAX_DESCRIPTION:
+        upd["description"] = desc[:MAX_DESCRIPTION - 3].rstrip() + "..."
+    a = tool.annotations
+    if a is not None and a.readOnlyHint and (a.destructiveHint is None or a.idempotentHint is None):
+        upd["annotations"] = a.model_copy(update={"destructiveHint": False if a.destructiveHint is None else a.destructiveHint,
+                                                 "idempotentHint": True if a.idempotentHint is None else a.idempotentHint})
+    size = BIG_RESULTS.get(tool.name)
+    if size and not (tool.meta or {}).get("anthropic/maxResultSizeChars"):
+        upd["meta"] = {**(tool.meta or {}), "anthropic/maxResultSizeChars": size}
+    return tool.model_copy(update=upd) if upd else tool
+
+
 def build_server(conn: Connector) -> Server:
     server = Server("aiteam-connector", version=VERSION,
                     instructions=INSTRUCTIONS)
 
     @server.list_tools()
     async def _list() -> list[types.Tool]:
-        return await conn.list_tools()
+        return [for_clients(t) for t in await conn.list_tools()]
 
     # Who we are (intro.py): the first thing a client meets, as an MCP prompt and an MCP resource.
     @server.list_prompts()
