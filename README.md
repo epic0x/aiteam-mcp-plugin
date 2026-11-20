@@ -219,6 +219,15 @@ https://aiteam.space/pricing. Map: [docs/ENTITLEMENTS.md](docs/ENTITLEMENTS.md).
   [epic0x/aiteam-skills](https://github.com/epic0x/aiteam-skills), pinned in [skills.lock.json](skills.lock.json).
 - **Tests:** `cd connector && pip install -e ".[test]" && python -m pytest -q`; package and plugin checks in
   `tests/`. Local runner: `scripts/box-test.sh`.
+- **Relay settings:** the relay (`mcp.aiteam.space`) reads these from its environment. The full list, with time
+  limits and cache settings, is in [docs/RELAY.md](docs/RELAY.md#environment).
+
+  | Variable | Default | What it does |
+  |---|---|---|
+  | `RELAY_MULTI_BOX` | `off` | `on`: the relay is its own MCP server over every box in the connection (`boxes_list`, `box` argument on each tool, `box="all"` fan-outs) |
+  | `RELAY_CODE_MODE` | `off` | `on`: adds `search`, `describe` and `execute` (needs `RELAY_MULTI_BOX=on` and Node 25+; stays off with a log line if the sandbox check fails) |
+  | `RELAY_NODE` | `node` on `PATH` | Code Mode: path to the Node 25+ binary that runs the sandbox, for example `/opt/node26/bin/node` |
+  | `RELAY_EXCHANGE_SLOTS` | `2` | token exchanges in flight at once per relay process, all connections and boxes together; raise it (for example to `8`) when many boxes connect at once |
 - **Docs:** [UNIFIED-CONNECTOR](docs/UNIFIED-CONNECTOR.md) · [AI-CONTROL](docs/AI-CONTROL.md) ·
   [MODEL-CONTROL](docs/MODEL-CONTROL.md) · [GATEWAY-CONTROLS](docs/GATEWAY-CONTROLS.md) · [TOOLS](docs/TOOLS.md) ·
   [HEALTH](docs/HEALTH.md) · [DISCORD-THREADS](docs/DISCORD-THREADS.md) · [TELEGRAM-TOPICS](docs/TELEGRAM-TOPICS.md) ·
