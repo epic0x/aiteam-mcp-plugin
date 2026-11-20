@@ -13,6 +13,9 @@ Claude plugin 0.1.10. Relay changes need a relay redeploy; the connector change 
 ### relay: token exchange
 - Each POST to the token route waits up to `RELAY_EXCHANGE_TIMEOUT` seconds (25), at most `RELAY_EXCHANGE_SLOTS` (2) run at once per relay, and busy or failed answers are retried with a short backoff. Box tool lists are cached per connection; time limits come from the environment (docs/RELAY.md, Environment).
 - With `RELAY_MULTI_BOX=on`, a single-box connection keeps working when `/oauth/targets` fails: it falls back to the plain exchange. Scoped connections fail closed.
+- Exchanges are paced: one per box at a time; `503`/`429` retried up to 3 times with jitter and a capped `Retry-After`; `500`/`502`/`504` and an unreachable route once; never past the caller's deadline; a box whose busy retries ran out pauses 5 s. `RELAY_EXCHANGE_CONCURRENCY` is accepted as a second name for `RELAY_EXCHANGE_SLOTS` (SLOTS wins when both are set). `RELAY_EXCHANGE_TIMEOUT` is capped at 120 s. Fan-outs ask 4 boxes at once instead of 8.
+- Sessions are stateless, so several relay processes can serve one client: an unknown `Mcp-Session-Id` is ignored, `GET /mcp` answers 405, `DELETE` answers 200, and the relay answers `server/discover` itself (no more 400s on that probe).
+- `RELAY_ISSUER_HEADERS_FILE` (off by default): extra headers, such as an access gate's service token, sent only on the relay's own calls to the issuer. See docs/RELAY.md, Issuer behind an access gate.
 
 ### connector
 - `son_list` on a box without the `/v1/sons` route (older or hand-built boxes) no longer reports the Son offline: it checks the box's AI status route instead and says so in `via` and `note`.

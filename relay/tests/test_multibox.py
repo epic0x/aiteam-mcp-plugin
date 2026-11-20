@@ -4,6 +4,7 @@ import asyncio
 import base64
 import contextlib
 import json
+import re
 import time
 from urllib.parse import parse_qs
 
@@ -81,6 +82,10 @@ class World:
         self.targets_timeouts = []  # the read timeout the relay set on each GET /oauth/targets
         self.grant_v = None  # set: /oauth/targets says so, and a v2/v3 grant needs `target` (as on aiteam.space)
         self.exchange_delay = 0.0  # seconds before each token exchange answers
+        self.exchange_fail = []  # (status, error, retry_after or None) answered by the next exchanges, in order
+        self.fail_target = None  # set: only exchanges for this target id take the answers above
+        self.ex_inflight = self.ex_max = 0  # token exchanges being answered right now / the most at once
+        self.targets_delay = 0.0  # seconds before each GET /oauth/targets answers
         self.seq = 0
         self.issued = {}  # box host -> set of valid tokens
         self.dead = set()  # box hosts that refuse connections
@@ -113,6 +118,8 @@ class World:
         if req.url.path == "/oauth/targets":
             self.targets_calls.append(req.headers.get("authorization"))
             self.targets_timeouts.append((req.extensions.get("timeout") or {}).get("read"))
+            if self.targets_delay:
+                await asyncio.sleep(self.targets_delay)
             if self.targets_raise:
                 raise self.targets_raise("targets down")
             if self.targets_status != 200:
@@ -123,30 +130,42 @@ class World:
                 body["grant_v"] = self.grant_v
             return httpx.Response(200, json=body)
         if req.url.path == "/oauth/token":
-            form = {k: v[0] for k, v in parse_qs(req.content.decode()).items()}
-            self.exchanges.append(form)
-            if self.exchange_delay:
-                await asyncio.sleep(self.exchange_delay)
-            if self.grant_v in (2, 3) and not form.get("target"):
-                # the grant row decides, not the token's claims (exchangeScope / the v2 branch of exchangeRelayToken)
-                return httpx.Response(400, json={"error": "invalid_target", "error_description": "target is required"})
-            if self.exchange_reply:
-                r = self.exchange_reply(form)
-                if r is not None:
-                    return r
-            t = next((x for x in self.targets if x["id"] == form.get("target")), None)
-            if form.get("target") and t is None:
-                return httpx.Response(403, json={"error": "invalid_target", "error_description": "not in scope"})
-            if t is None:
-                t = self.targets[0]
-            self.seq += 1
-            tok = f"box-token-{self.seq}"
-            host = httpx.URL(t["mcp_url"]).host
-            self.issued.setdefault(host, set()).add(tok)
-            return httpx.Response(200, json={"access_token": tok, "token_type": "Bearer", "expires_in": 300,
-                                             "son_mcp_url": t["mcp_url"], "target_kind": t["kind"]})
+            self.ex_inflight += 1
+            self.ex_max = max(self.ex_max, self.ex_inflight)
+            try:
+                return await self.token_route(req)
+            finally:
+                self.ex_inflight -= 1
         self.proxied.append(req)  # flag off: the old stream proxy sends the raw request here
         return httpx.Response(200, json={"jsonrpc": "2.0", "id": 1, "result": {}})
+
+    async def token_route(self, req: httpx.Request):
+        form = {k: v[0] for k, v in parse_qs(req.content.decode()).items()}
+        self.exchanges.append(form)
+        if self.exchange_delay:
+            await asyncio.sleep(self.exchange_delay)
+        if self.exchange_fail and self.fail_target in (None, form.get("target")):
+            status, err, after = self.exchange_fail.pop(0)
+            return httpx.Response(status, json={"error": err} if err else None,
+                                  headers={"retry-after": str(after)} if after is not None else None)
+        if self.grant_v in (2, 3) and not form.get("target"):
+            # the grant row decides, not the token's claims (exchangeScope / the v2 branch of exchangeRelayToken)
+            return httpx.Response(400, json={"error": "invalid_target", "error_description": "target is required"})
+        if self.exchange_reply:
+            r = self.exchange_reply(form)
+            if r is not None:
+                return r
+        t = next((x for x in self.targets if x["id"] == form.get("target")), None)
+        if form.get("target") and t is None:
+            return httpx.Response(403, json={"error": "invalid_target", "error_description": "not in scope"})
+        if t is None:
+            t = self.targets[0]
+        self.seq += 1
+        tok = f"box-token-{self.seq}"
+        host = httpx.URL(t["mcp_url"]).host
+        self.issued.setdefault(host, set()).add(tok)
+        return httpx.Response(200, json={"access_token": tok, "token_type": "Bearer", "expires_in": 300,
+                                         "son_mcp_url": t["mcp_url"], "target_kind": t["kind"]})
 
     # every box, one ASGI app keyed by Host
     async def box_app(self, scope, receive, send):
@@ -855,3 +874,380 @@ async def test_box_tools_pass_through_with_box(world, clock, monkeypatch):
         assert tools[n].inputSchema["properties"]["box"]["enum"] == ["box-a", "box-b"], n
     assert data(r) == {"tool": "discord_read", "args": {"x": "c1"}}
     assert world.b.calls[-1] == ("discord_read", {"x": "c1"})
+
+
+# ---------------------------------------------------------------------------------------------------- token route load
+# Production: a cold tools/list over 8 boxes sent 8 token exchanges at once (plus the background warm-up) and the
+# token route answered 503 temporarily_unavailable to most of them, so no box listed.
+def many_boxes(world, n=8):
+    """n boxes in the grant (box-a, box-b, then box-c...), each a real MCP server with sessions_list."""
+    for b in (world.a, world.b):
+        b.tools["sessions_list"] = (RO, lambda a: {"count": 1})
+    for i in range(2, n):
+        slug = f"box-{chr(ord('a') + i)}"
+        tid = f"{i:08d}-0000-0000-0000-000000000000"
+        world.targets.append(target(tid, slug, f"https://{slug}.aiteam.space/mcp"))
+        world.boxes[f"{slug}.aiteam.space"] = FakeBox(slug, {"sessions_list": (RO, lambda a: {"count": 1}),
+                                                             "only_" + slug[-1]: (RO, lambda a: {})})
+
+
+def fast_backoff(monkeypatch):
+    from aiteam_relay import exchange
+    monkeypatch.setattr(exchange, "BACKOFF_BASE", 0.02, raising=False)
+
+
+def per_target(world):
+    out = {}
+    for e in world.exchanges:
+        out[e.get("target")] = out.get(e.get("target"), 0) + 1
+    return out
+
+
+async def test_cold_list_over_eight_boxes_keeps_two_exchanges_in_flight(world, clock, monkeypatch):
+    many_boxes(world)
+    world.exchange_delay = 0.05
+    async with relay(world, clock, monkeypatch, box_timeout=3.0) as app, session(app, V3()) as s:
+        names = {t.name for t in (await s.list_tools()).tools}
+    assert {"only_a", "only_b", "only_c", "only_h"} <= names
+    assert world.ex_max <= 2, world.ex_max
+    assert len(world.exchanges) == 8 and set(per_target(world).values()) == {1}
+
+
+async def test_exchange_concurrency_from_env(world, clock, monkeypatch):
+    many_boxes(world, 6)
+    world.exchange_delay = 0.05
+    async with relay(world, clock, monkeypatch, box_timeout=3.0, env={"RELAY_EXCHANGE_CONCURRENCY": 1}) as app, \
+            session(app, V3()) as s:
+        await s.list_tools()
+    assert world.ex_max == 1
+    for bad in ("0", "-1", "abc", "1000"):
+        monkeypatch.setenv("RELAY_EXCHANGE_CONCURRENCY", bad)
+        assert Settings().exchange_concurrency == 2, bad
+    monkeypatch.delenv("RELAY_EXCHANGE_CONCURRENCY")
+    assert Settings().exchange_concurrency == 2
+
+
+async def test_exchange_slots_name_still_works_and_wins(world, clock, monkeypatch):
+    """Deployed relays set RELAY_EXCHANGE_SLOTS; it keeps working, and wins when both names are set."""
+    monkeypatch.delenv("RELAY_EXCHANGE_CONCURRENCY", raising=False)
+    monkeypatch.setenv("RELAY_EXCHANGE_SLOTS", "8")
+    assert Settings().exchange_concurrency == 8
+    monkeypatch.setenv("RELAY_EXCHANGE_CONCURRENCY", "3")
+    assert Settings().exchange_concurrency == 8
+    monkeypatch.setenv("RELAY_EXCHANGE_SLOTS", " ")
+    assert Settings().exchange_concurrency == 3
+    monkeypatch.setenv("RELAY_EXCHANGE_SLOTS", "abc")
+    assert Settings().exchange_concurrency == 2  # a bad value keeps the default, never falls through
+    monkeypatch.delenv("RELAY_EXCHANGE_CONCURRENCY")
+    many_boxes(world, 6)
+    world.exchange_delay = 0.05
+    async with relay(world, clock, monkeypatch, box_timeout=3.0, env={"RELAY_EXCHANGE_SLOTS": 1}) as app, \
+            session(app, V3()) as s:
+        await s.list_tools()
+    assert world.ex_max == 1
+
+
+def test_exchange_timeout_from_env(monkeypatch):
+    monkeypatch.delenv("RELAY_EXCHANGE_TIMEOUT", raising=False)
+    assert Settings().exchange_timeout == 25.0
+    monkeypatch.setenv("RELAY_EXCHANGE_TIMEOUT", "60")
+    assert Settings().exchange_timeout == 60.0
+    for bad in ("0", "-1", "abc", "121"):
+        monkeypatch.setenv("RELAY_EXCHANGE_TIMEOUT", bad)
+        assert Settings().exchange_timeout == 25.0, bad
+
+
+def test_fanout_asks_four_boxes_at_once():
+    from aiteam_relay.boxes import FANOUT_CONCURRENCY
+    assert FANOUT_CONCURRENCY == 4
+
+
+async def test_503s_then_success_lists_every_box(world, clock, monkeypatch, caplog):
+    import logging
+    caplog.set_level(logging.INFO, logger="aiteam_relay")
+    fast_backoff(monkeypatch)
+    many_boxes(world)
+    world.exchange_delay = 0.02
+    world.exchange_fail = [(503, "temporarily_unavailable", None), (503, "temporarily_unavailable", "0.05"),
+                           (429, "slow_down", None)]
+    tok = V3()
+    async with relay(world, clock, monkeypatch, box_timeout=3.0) as app, session(app, tok) as s:
+        names = {t.name for t in (await s.list_tools()).tools}
+        r = await s.call_tool("sessions_list", {"box": "box-h"})
+    assert {"only_a", "only_b", "only_c", "only_d", "only_e", "only_f", "only_g", "only_h"} <= names
+    assert not r.isError
+    assert world.ex_max <= 2 and world.exchange_fail == []
+    assert len(world.exchanges) == 8 + 3
+    retries = [m for m in caplog.messages if "token exchange for" in m and "retry" in m]
+    assert len(retries) == 3 and any("503 temporarily_unavailable" in m for m in retries) and \
+        any("429 slow_down" in m for m in retries)
+    assert all(re.search(r"token exchange for box-[a-h] answered", m) for m in retries)
+    from aiteam_relay.exchange import token_key
+    assert tok not in caplog.text and "box-token-" not in caplog.text and token_key(tok) not in caplog.text
+
+
+async def test_one_exchange_per_box_under_concurrent_calls(world, clock, monkeypatch):
+    many_boxes(world, 4)
+    tok = V3()
+    async with relay(world, clock, monkeypatch, box_timeout=3.0) as app, session(app, tok) as s:
+        await s.list_tools()
+        await settle(app)
+        clock.t += 280  # the box tokens are past their cache time; the tool lists are still fresh
+        world.exchanges.clear()
+        world.exchange_delay = 0.1
+        got = await asyncio.gather(*(s.call_tool("sessions_list", {"box": f"box-{'abcd'[i % 4]}"})
+                                     for i in range(12)), s.list_tools(), s.call_tool("boxes_list", {}))
+        await settle(app)
+    assert not any(r.isError for r in got[:12])
+    assert per_target(world) == {SON_A: 1, SON_B: 1, "00000002-0000-0000-0000-000000000000": 1,
+                                 "00000003-0000-0000-0000-000000000000": 1}
+    assert world.ex_max <= 2
+
+
+async def test_targets_fetched_once_under_concurrency(world, clock, monkeypatch):
+    world.targets_delay = 0.1
+    tok = V3()
+    async with relay(world, clock, monkeypatch) as app:
+        async def one():
+            async with session(app, tok) as s:
+                await s.list_tools()
+        await asyncio.gather(*(one() for _ in range(5)))
+    assert len(world.targets_calls) == 1
+
+
+def exchanger(w, **kw):
+    from aiteam_relay.exchange import Exchanger
+    http = httpx.AsyncClient(transport=httpx.MockTransport(w.site))
+    return http, Exchanger(http, token_url="https://aiteam.space/oauth/token", suffix=".aiteam.space",
+                           relay_host="mcp.aiteam.space", **kw)
+
+
+async def nosleep(_s):
+    await asyncio.sleep(0)
+
+
+@pytest.mark.parametrize("status,error", [(400, "invalid_grant"), (403, "invalid_target"), (400, "invalid_request"),
+                                          (401, "invalid_client"), (404, None)])
+async def test_refusals_are_not_retried(status, error):
+    w = World()
+    w.exchange_fail = [(status, error, None)]
+    http, ex = exchanger(w, sleep=nosleep)
+    with pytest.raises(Exception):
+        await ex.get(V3(), target=SON_A)
+    assert len(w.exchanges) == 1
+    await http.aclose()
+
+
+async def test_server_error_retried_once():
+    from aiteam_relay.exchange import ExchangeError
+    w = World()
+    w.exchange_fail = [(500, None, None), (500, None, None)]
+    http, ex = exchanger(w, sleep=nosleep)
+    with pytest.raises(ExchangeError):
+        await ex.get(V3(), target=SON_A)
+    assert len(w.exchanges) == 2
+    w.exchange_fail = [(502, None, None)]
+    assert (await ex.get(V3(), target=SON_A)).son_mcp_url == A_URL and len(w.exchanges) == 4
+    await http.aclose()
+
+
+async def test_busy_retries_capped_then_short_pause(clock):
+    from aiteam_relay import exchange
+    w = World()
+    w.exchange_fail = [(503, "temporarily_unavailable", None)] * (exchange.RETRIES + 1)
+    http, ex = exchanger(w, sleep=nosleep, clock=clock)
+    tok = V3()
+    with pytest.raises(exchange.ExchangeBusy):
+        await ex.get(tok, target=SON_A)
+    assert len(w.exchanges) == exchange.RETRIES + 1
+    with pytest.raises(exchange.ExchangeBusy):  # inside the pause: the token route is not asked again
+        await ex.get(tok, target=SON_A)
+    assert len(w.exchanges) == exchange.RETRIES + 1
+    assert (await ex.get(tok, target=SON_B)).son_mcp_url == B_URL  # another box is not paused
+    clock.t += exchange.COOL_DOWN + 1
+    assert (await ex.get(tok, target=SON_A)).son_mcp_url == A_URL
+    assert tok not in repr(ex.cache) + repr(ex._cool) + repr(list(ex._flights))
+    await http.aclose()
+
+
+async def test_retry_after_is_honoured_and_capped():
+    from aiteam_relay import exchange
+    w = World()
+    waits = []
+
+    async def sleep(s):
+        waits.append(s)
+    http, ex = exchanger(w, sleep=sleep)
+    w.exchange_fail = [(503, "temporarily_unavailable", "3"), (429, "slow_down", "999")]
+    got = await ex.get(V3(), target=SON_A)
+    assert got.son_mcp_url == A_URL and waits == [3.0, exchange.RETRY_AFTER_MAX]
+    assert exchange.retry_after("Wed, 21 Oct 2015 07:28:00 GMT") == 0.0
+    assert exchange.retry_after("soon") is None
+    assert all(0.5 * exchange.BACKOFF_BASE * 2 ** n <= exchange.backoff(n) <= exchange.BACKOFF_BASE * 2 ** n
+               for n in range(3))
+    assert exchange.backoff(20) <= exchange.BACKOFF_MAX
+    await http.aclose()
+
+
+async def test_no_retry_past_the_callers_deadline():
+    from aiteam_relay import exchange
+    w = World()
+    w.exchange_fail = [(503, "temporarily_unavailable", "5")] * 4
+    http, ex = exchanger(w)
+    t0 = time.monotonic()
+    with pytest.raises(exchange.ExchangeBusy):
+        await ex.get(V3(), target=SON_A, deadline=asyncio.get_running_loop().time() + 1.0)
+    assert time.monotonic() - t0 < 0.5 and len(w.exchanges) == 1
+    await http.aclose()
+
+
+async def test_concurrent_callers_share_one_exchange():
+    w = World()
+    w.exchange_delay = 0.05
+    http, ex = exchanger(w)
+    tok = V3()
+    got = await asyncio.gather(*(ex.get(tok, target=SON_A) for _ in range(10)),
+                               *(ex.get(tok, target=SON_B) for _ in range(10)))
+    assert {g.son_mcp_url for g in got} == {A_URL, B_URL}
+    assert per_target(w) == {SON_A: 1, SON_B: 1}
+    await http.aclose()
+
+
+# ---------------------------------------------------------------------------------------------------- client sessions
+# Production: about half of the client's POST /mcp got 400. Each one was the first request of a client connection:
+# a dual-era client probes with server/discover at the stateless revision first, the SDK answered that 400
+# (unsupported protocol version), and the client fell back to initialize. GET /mcp opened a stream held open forever.
+H = {"content-type": "application/json", "accept": "application/json, text/event-stream"}
+PV = "2025-06-18"
+INIT = {"jsonrpc": "2.0", "id": 1, "method": "initialize",
+        "params": {"protocolVersion": PV, "capabilities": {}, "clientInfo": {"name": "c", "version": "1"}}}
+DISCOVER = {"jsonrpc": "2.0", "id": 0, "method": "server/discover", "params": {"_meta": {
+    "io.modelcontextprotocol/protocolVersion": "2026-07-28",
+    "io.modelcontextprotocol/clientInfo": {"name": "c", "version": "1"},
+    "io.modelcontextprotocol/clientCapabilities": {}}}}
+
+
+def rpc(i, method, params=None):
+    return {"jsonrpc": "2.0", "id": i, "method": method, "params": params or {}}
+
+
+async def raw(app, tok, method, body=None, headers=None, limit=3.0):
+    """One HTTP request to the relay, the whole answer read within `limit` seconds (a held stream fails)."""
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="https://mcp.aiteam.space") as h:
+        hdr = {"authorization": f"Bearer {tok}", **H, **(headers or {})}
+        return await asyncio.wait_for(h.request(method, "/mcp", headers=hdr,
+                                                content=None if body is None else json.dumps(body)), limit)
+
+
+def answer(r):
+    if r.headers.get("content-type", "").startswith("application/json"):
+        return r.json()
+    return [json.loads(line[5:]) for line in r.text.splitlines() if line.startswith("data:")][-1]
+
+
+async def client_session(app, tok, sid_from=None):
+    """What a dual-era client sends, start to end: probe, handshake, list, call, GET stream, DELETE. Requests after
+    initialize carry the session id the relay gave (or `sid_from`, one another process gave). Returns statuses."""
+    out = []
+    r = await raw(app, tok, "POST", DISCOVER, headers={"mcp-protocol-version": "2026-07-28",
+                                                       "mcp-method": "server/discover"})
+    out.append(("discover", r.status_code))
+    r = await raw(sid_from or app, tok, "POST", INIT)
+    out.append(("initialize", r.status_code))
+    pv = answer(r)["result"]["protocolVersion"]
+    sid = r.headers.get("mcp-session-id") or ("never-issued-here" if sid_from else None)
+    h = {"mcp-protocol-version": pv, **({"mcp-session-id": sid} if sid else {})}
+    r = await raw(app, tok, "POST", {"jsonrpc": "2.0", "method": "notifications/initialized"}, headers=h)
+    out.append(("initialized", r.status_code))
+    r = await raw(app, tok, "POST", rpc(2, "tools/list"), headers=h)
+    out.append(("tools/list", r.status_code))
+    assert "only_a" in {t["name"] for t in answer(r)["result"]["tools"]}
+    r = await raw(app, tok, "POST", rpc(3, "tools/call", {"name": "shared", "arguments": {"box": "box-b"}}),
+                  headers=h)
+    out.append(("tools/call", r.status_code))
+    assert answer(r)["result"]["isError"] is False
+    r = await raw(app, tok, "GET", headers={**h, "accept": "text/event-stream"}, limit=1.0)
+    out.append(("GET", r.status_code))
+    assert {m.strip() for m in r.headers.get("allow", "").split(",")} == {"POST", "DELETE"}
+    r = await raw(app, tok, "DELETE", headers=h)
+    out.append(("DELETE", r.status_code))
+    return out
+
+
+EXPECTED = [("discover", 200), ("initialize", 200), ("initialized", 202), ("tools/list", 200), ("tools/call", 200),
+            ("GET", 405), ("DELETE", 200)]
+
+
+async def test_full_client_session_has_no_400(world, clock, monkeypatch):
+    async with relay(world, clock, monkeypatch) as app:
+        assert await client_session(app, V3()) == EXPECTED
+
+
+@contextlib.asynccontextmanager
+async def other_instance(world, clock):
+    """A second relay process on the same settings and boxes (its own caches, its own SDK session manager)."""
+    app = create_app(Settings(), client=httpx.AsyncClient(transport=httpx.MockTransport(world.site)),
+                     jwks=FakeJwks(), box_transport=DeadAware(world), clock=clock, box_timeout=2.0)
+    async with app.router.lifespan_context(app):
+        yield app
+
+
+async def test_session_id_from_another_instance(world, clock, monkeypatch):
+    """Initialize on relay A, then every later request on relay B (another process behind the front proxy)."""
+    async with relay(world, clock, monkeypatch) as a, other_instance(world, clock) as b:
+        assert a is not b and a.state.exchanger is not b.state.exchanger
+        assert await client_session(b, V3(), sid_from=a) == EXPECTED
+
+
+async def test_sdk_client_session_has_no_4xx(world, clock, monkeypatch):
+    seen = []
+
+    async def hook(resp):
+        seen.append((resp.request.method, resp.status_code))
+    async with relay(world, clock, monkeypatch) as app:
+        http = httpx.AsyncClient(transport=httpx.ASGITransport(app=app), headers={"authorization": f"Bearer {V3()}"},
+                                 event_hooks={"response": [hook]})
+        async with http:
+            async with streamable_http_client("https://mcp.aiteam.space/mcp", http_client=http) as (r, w, _):
+                async with ClientSession(r, w) as s:
+                    await s.initialize()
+                    await s.list_tools()
+                    assert not (await s.call_tool("shared", {"box": "box-a"})).isError
+    assert seen and all(code < 400 for _, code in seen), seen
+
+
+async def test_get_and_delete_touch_nothing(world, clock, monkeypatch):
+    async with relay(world, clock, monkeypatch) as app:
+        for sid in (None, "a-session-from-somewhere-else"):
+            extra = {"mcp-session-id": sid} if sid else {}
+            r = await raw(app, V3(), "GET", headers={"accept": "text/event-stream", **extra}, limit=1.0)
+            assert r.status_code == 405 and r.content == b""
+            r = await raw(app, V3(), "DELETE", headers=extra)
+            assert r.status_code == 200
+        r = await raw(app, "not-a-token", "GET", headers={"accept": "text/event-stream"}, limit=1.0)
+        assert r.status_code == 401  # still authenticated first
+    assert world.targets_calls == [] and world.exchanges == []
+
+
+async def test_post_answer_stream_ends_with_the_result(world, clock, monkeypatch):
+    world.a.slow = 0.2
+    async with relay(world, clock, monkeypatch) as app:
+        tok = V3()
+        r = await raw(app, tok, "POST", INIT)
+        assert r.status_code == 200 and "mcp-session-id" not in r.headers
+        r = await raw(app, tok, "POST", rpc(3, "tools/call", {"name": "shared", "arguments": {"box": "box-a"}}),
+                      headers={"mcp-protocol-version": PV}, limit=2.0)  # read to the end: the stream closed
+    assert r.status_code == 200 and r.headers["content-type"].startswith("text/event-stream")
+    events = [line for line in r.text.splitlines() if line.startswith("data:")]
+    assert len(events) == 1 and json.loads(events[0][5:])["id"] == 3
+
+
+async def test_discover_names_only_the_handshake_revisions(world, clock, monkeypatch):
+    async with relay(world, clock, monkeypatch) as app:
+        r = await raw(app, V3(), "POST", DISCOVER, headers={"mcp-protocol-version": "2026-07-28"})
+        assert world.targets_calls == [] and world.exchanges == []  # answered without asking aiteam.space
+        bad = await raw(app, V3(), "POST", rpc(2, "tools/list"), headers={"mcp-protocol-version": "1999-01-01"})
+    res = r.json()["result"]
+    assert r.status_code == 200 and r.json()["id"] == 0
+    assert PV in res["supportedVersions"] and "2026-07-28" not in res["supportedVersions"]
+    assert bad.status_code == 400  # a revision the relay does not speak is still refused, as the spec requires

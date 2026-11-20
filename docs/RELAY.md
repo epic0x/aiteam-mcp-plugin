@@ -37,7 +37,7 @@ https://<slug>.aiteam.space/mcp   (the Son's existing public gate, unchanged)
 | `GET /.well-known/oauth-protected-resource` and `/.well-known/oauth-protected-resource/mcp` | PRM JSON: resource `https://mcp.aiteam.space/mcp`, authorization server `https://aiteam.space`, scopes `son:read son:write` |
 | `GET /.well-known/openai-apps-challenge` | the OpenAI domain challenge token, `text/plain`, no newline; 404 when unset |
 | `GET /healthz` | `ok` |
-| `GET/POST/DELETE /mcp` | 401 + `WWW-Authenticate: Bearer resource_metadata=".../oauth-protected-resource/mcp"` without a valid token (`error="invalid_token"` when one was sent); else exchange and stream-proxy |
+| `GET/POST/DELETE /mcp` | 401 + `WWW-Authenticate: Bearer resource_metadata=".../oauth-protected-resource/mcp"` without a valid token (`error="invalid_token"` when one was sent); else exchange and stream-proxy (with `RELAY_MULTI_BOX=on`: see Sessions and streams) |
 
 Header rules on `/mcp`: only `content-type`, `accept`, `mcp-session-id`, `mcp-protocol-version` and `last-event-id`
 go upstream, plus `Authorization: Bearer <exchanged token>`. Inbound `Authorization`, `Cookie`, `X-Aiteam-*` and
@@ -66,14 +66,42 @@ Logs: no tokens, no full upstream URLs (only the Son host name). The `httpx` log
 | `RELAY_FANOUT_TIMEOUT` | `10` | multi-box: seconds per box in `boxes_list` and in `box="all"` reads |
 | `RELAY_LIST_TIMEOUT` | `25` | multi-box: the longest one `tools/list` answer waits for boxes whose list is not cached yet |
 | `RELAY_TOOLS_TTL` | `300` | multi-box: seconds a box's cached tool list counts as fresh |
-| `RELAY_EXCHANGE_SLOTS` | `2` | token exchanges in flight at once per process, all connections and boxes together |
-| `RELAY_EXCHANGE_TIMEOUT` | `25` | seconds one POST to the issuer's token route may take (the issuer allows itself up to 20 s) |
+| `RELAY_EXCHANGE_SLOTS` | `2` | token exchanges in flight at once per process, all connections and boxes together (1 to 64). Wins over `RELAY_EXCHANGE_CONCURRENCY` when both are set |
+| `RELAY_EXCHANGE_CONCURRENCY` | unset | the same setting under its newer name; read only when `RELAY_EXCHANGE_SLOTS` is unset |
+| `RELAY_EXCHANGE_TIMEOUT` | `25` | seconds one POST to the issuer's token route may take (at most 120); never past the caller's own limit |
 | `RELAY_CODE_MODE` | `off` | `on` = add `search`, `describe` and `execute` (needs `RELAY_MULTI_BOX=on`; see Code Mode) |
 | `RELAY_NODE` | `node` on `PATH` | Code Mode: the Node 25+ binary that runs the sandbox |
 | `RELAY_SANDBOX_DIR` | `relay/sandbox` | Code Mode: the sandbox folder (after `npm ci`); the only folder the sandbox may read |
+| `RELAY_ISSUER_HEADERS_FILE` | unset (off) | file of extra headers for the relay's own calls to the issuer only, for an issuer behind an access gate (see Issuer behind an access gate) |
 
 Time values are seconds (decimals allowed), above 0 and at most 3600. Anything else keeps the default and logs a
-warning.
+warning. The same goes for an exchange slot count outside 1 to 64 and `RELAY_EXCHANGE_TIMEOUT` above 120.
+
+### Issuer behind an access gate
+For an issuer that sits behind an access gate wanting a service token on every request (a staging site, for
+example), the relay can add the gate's headers to its own calls to the issuer. Off unless
+`RELAY_ISSUER_HEADERS_FILE` is set; production runs without it.
+
+1. Put the service token in a file only the relay's user can read:
+
+   ```
+   CF-Access-Client-Id: <client id>
+   CF-Access-Client-Secret: <client secret>
+   ```
+
+   `chmod 600` it. Blank lines and lines starting with `#` are skipped.
+2. Set `RELAY_ISSUER_HEADERS_FILE` to its path and restart the relay. The log says
+   `issuer headers on for <issuer> (CF-Access-Client-Id, CF-Access-Client-Secret)`, with names only.
+
+Where the headers go:
+- Only the issuer's own origin (`AITEAM_ISSUER`: same scheme, host and port), only `/oauth/token`, `/oauth/targets`
+  and `/oauth/jwks`.
+- Never to a box, never to any other path or host, never on a redirect (the relay follows none). A header with one of
+  those names on any other request is removed, even one a client sent.
+
+The relay refuses to start, and says why without the value, when the file is missing, is a symlink or not a plain file, can be
+read by group or others, names any other header, or has an empty value. Use a service token made for the relay
+alone, so it can be revoked on its own.
 
 ## Multiple boxes
 
@@ -117,7 +145,8 @@ relay keeps each box's tool list in memory, per process:
 - Fresh for `RELAY_TOOLS_TTL` (5 minutes). After that the cached list is still served at once and refreshed in the
   background.
 - Warm start: as soon as a request's boxes are known, the relay starts loading every box that is not cached, so the
-  `tools/list` after `initialize` usually finds them ready.
+  `tools/list` after `initialize` usually finds them ready. Those loads take their box tokens through the same
+  exchange limit as everything else (see Token exchange), so a warm start never sends a burst to aiteam.space.
 - Cold box: `tools/list` waits for it, up to `RELAY_LIST_TIMEOUT` in total for all such boxes, and then answers with
   what is ready. The log names the boxes left out. Their loads keep running (up to `RELAY_BOX_TIMEOUT` each) and show
   up in the next `tools/list`.
@@ -128,14 +157,67 @@ relay keeps each box's tool list in memory, per process:
 
 ### Limits
 - 50 boxes per connection. Anything after that is dropped and `boxes_list` reports `truncated`.
-- 8 boxes asked at once per fan-out, `RELAY_FANOUT_TIMEOUT` (10 s) per box for `boxes_list` and `all` reads, so one
+- 4 boxes asked at once per fan-out, `RELAY_FANOUT_TIMEOUT` (10 s) per box for `boxes_list` and `all` reads, so one
   dead box never holds a fan-out answer for long. A box that is down shows `ok: false`; the other boxes still answer.
-- Loading a tool list: `RELAY_BOX_TIMEOUT` (30 s) per box, 32 loads at once per process. A box never listed before
+- Loading a tool list: `RELAY_BOX_TIMEOUT` (30 s) per box, 32 loads at once per process, their token exchanges at
+  most `RELAY_EXCHANGE_SLOTS` (2) at once (see Token exchange). A box never listed before
   is left out of `tools/list` until its first list arrives; a box listed before stays listed (see Tool list cache).
 - An `all` answer is capped at 256 KB. Boxes past the cap show `truncated` and can be asked on their own.
 - Tool lists are fresh for 5 minutes per box (then served while they refresh), the box list is cached 30 s
   (`GET /oauth/targets`, `RELAY_TARGETS_TIMEOUT` 15 s), box tokens until 30 s before they expire.
 - Inline calendar media (`media_b64`) up to 2 MB. Use `media_url` for anything larger.
+
+### Token exchange
+Every box needs its own exchanged token, and a cold `tools/list` over many boxes needs all of them at once. The
+token route on aiteam.space answers `503 temporarily_unavailable` when it gets too many at once, so the relay paces
+itself (per process):
+
+- One exchange per box at a time. Requests that need the same box token while an exchange for it is running wait
+  for that one (prefetch, warm start, `tools/list` and calls of one connection, and of other connections with the
+  same token).
+- At most `RELAY_EXCHANGE_SLOTS` (2) exchanges in flight at once, all boxes and connections together. The
+  others queue.
+- `503` and `429` are retried up to 3 times, waiting 0.5 s, 1 s, 2 s (each 50 to 100 % of that, at random, so
+  boxes do not retry in step), or the `Retry-After` the route sent, capped at 10 s. While one answer says "busy",
+  every new exchange of the process waits the same pause first.
+- `500`, `502`, `504` and an unreachable route are retried once, after the same short wait. A server error is often
+  one bad instance behind a load balancer; a second one is reported.
+- Every other answer is final, never retried: `invalid_grant` (a 401 to the client), `invalid_target` (that box is
+  not in the connection), any other 4xx.
+- No retry, and no wait in the queue, past the time the caller has left (the box or fan-out limit of that request).
+- A box whose retries ran out on `503` or `429` is not sent to the route again for 5 s; requests in that time get
+  "aiteam.space is busy; try again in a few seconds" for that box. A box whose tool list failed to load is tried
+  again after 30 s (Tool list cache), so a busy route is not asked again by the next `tools/list` either.
+- `GET /oauth/targets` is fetched once per token at a time too: concurrent requests of one connection share it.
+
+Logs name the box and the status (`token exchange for box-a answered 503 temporarily_unavailable; retry 1 of 3 in
+0.4 s`), never a token or a token hash. Box tokens stay cached until 30 s before they expire, as before.
+
+### Sessions and streams
+The multi-box relay keeps no MCP session: every request is authenticated and scoped on its own, and nothing a later
+request depends on is stored in the process. One connection's requests can land on different relay processes (several
+instances, or a fail-over to a second host) and work the same.
+
+- `POST /mcp`: every JSON-RPC request is answered on its own. `initialize` is answered without an `Mcp-Session-Id`,
+  and an `Mcp-Session-Id` the client sends anyway (one another process gave, or one from an older answer) is ignored,
+  never refused. Each answer is a short SSE stream that ends with the result; progress notifications for that request
+  come first on the same stream. Nothing is held open after the result.
+- `GET /mcp`: `405 Method Not Allowed`, `Allow: POST, DELETE`. The relay offers no standalone stream (the spec lets a
+  server decline it; clients then use POST only), so no connection is held open between requests.
+- `DELETE /mcp`: `200`, with or without `Mcp-Session-Id`: there is no session to end.
+- `server/discover` (the probe a client that knows the stateless protocol revision sends first): answered `200` with
+  the revisions the relay speaks (all `initialize` based). The client reads that as "use `initialize`" and does,
+  with no error status. A request at a revision the relay does not speak is still a `400`, as the spec requires.
+- GET, DELETE and `server/discover` never fetch the box list and never exchange a token.
+
+Before this, a client that probes with `server/discover` first got a `400` on that probe at the start of every
+connection (the SDK refuses the unknown revision), then fell back to `initialize`. The SDK logs
+`Terminating session: None` at the end of every stateless request, `200`s included, so that line alone is not an
+error. And `GET /mcp` opened a stream that stayed open with nothing on it.
+
+SSE versus JSON answers: POST answers stay SSE (`json_response` off) because a long box call sends progress
+notifications before its result, and those need a stream. The stream still ends with the result, so it costs no
+more connection time than a JSON answer.
 
 ### Box addresses
 Every box address from aiteam.space passes the same check as today: `https://<one label>.aiteam.space/mcp`, no port,
