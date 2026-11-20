@@ -262,8 +262,35 @@ API inside a snippet (one object argument each): `boxes.list`, `boxes.health`, `
   called as a plain tool, where the box's own approval rules apply. A loop can't get past this.
 
 ### Limits per run
-50 API calls, 10 s of CPU, 60 s in total (waiting on boxes included), 32 MB of memory, 256 KB result, 200 log lines,
+50 API calls, 10 s of CPU, 50 s in total (waiting on boxes included), 32 MB of memory, 256 KB result, 200 log lines,
 20,000 characters of code, 4 runs at once per relay.
+
+The 50 s wall stays under the 60 s an HTTP client waits for the first byte of an answer, so a long run ends with its
+own "time limit reached" result instead of a dropped connection.
+
+### Clients that run their own Code Mode
+Some clients run code over MCP tools themselves (Claude Code in an interactive terminal session): the model writes
+JavaScript that calls the box tools under their normal names, and every call goes through the client's own
+permission rules. Those clients call the box tools directly; `execute` is for every other client (claude.ai, Claude
+Desktop, ChatGPT). The server instructions and the usage guide say so. What the relay gives them:
+- Hints on every tool: read-only tools are also idempotent (run in parallel, repeated once after a dropped
+  connection); writes are neither. A tool on several boxes takes the least safe hints of the boxes that have it.
+- Results as JSON in `structuredContent`, with the same JSON as text. Box results that come as text only are given
+  structured content on the way through: a JSON object as is, other JSON as `{"value": ...}`, plain text as
+  `{"text": ...}`, an error as `{"ok": false, "error": ...}`. `boxes_list`, `search`, `describe` and `execute` also
+  declare an `outputSchema`.
+- `_meta["anthropic/maxResultSizeChars"]` (300,000) on `boxes_list`, the `all` reads and the code tools, so their
+  answers stay inline instead of moving to a file past 50,000 characters.
+- Schemas a strict client accepts: draft 2020-12, no `anyOf` / `oneOf` / `allOf` at the root, property names of
+  1-64 characters `[A-Za-z0-9_.-]`, descriptions under 4,096 characters. `relay/tests/test_tool_shapes.py` and
+  `connector/tests/test_tool_shapes.py` run every tool through these checks.
+
+### Protocol revisions
+The relay speaks the session-era revisions of the installed MCP SDK. A `server/discover` probe gets a
+DiscoverResult naming those revisions, so a dual-era client falls back to `initialize` with no error. Any other
+request at a revision the relay does not speak (for example `2026-07-28`) gets `400` with an
+`UnsupportedProtocolVersionError` (`-32022`) listing the supported revisions, as the spec requires, so the client
+retries with one of them. `initialize` negotiates in its body and is never refused for its header.
 
 ### Setup
 1. Install Node 25 or later on the relay host.

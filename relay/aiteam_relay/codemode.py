@@ -47,7 +47,9 @@ RECHECK_SECONDS = 300.0  # while off, look again every 5 minutes (after npm ci, 
 NOT_READY = "Code Mode is not set up on this relay yet"
 LIMITS = {"memoryBytes": 32 << 20, "stackBytes": 512 << 10, "cpuMs": 10_000, "maxCalls": 50, "maxLogs": 200,
           "maxOutBytes": 256 << 10}
-WALL_SECONDS = 60.0  # whole run, waiting on boxes included
+# whole run, waiting on boxes included. Below the 60 s a client waits for the first byte of an HTTP answer, so a long
+# run ends with its own "time limit" result instead of a dropped connection.
+WALL_SECONDS = 50.0
 MAX_CODE = 20_000
 MAX_LINE = 1 << 20  # one protocol line from the sandbox
 RUNS_AT_ONCE = 4
@@ -91,47 +93,71 @@ METHODS: dict[str, Method] = {m.name: m for m in [
 ]}
 
 INSTRUCTIONS = (
-    "Code Mode: write one JavaScript snippet for execute() instead of many tool calls. The snippet is the body of an "
+    "Box tool runner (aiteam Code Mode): write one JavaScript snippet for execute() instead of many tool calls. The snippet is the body of an "
     "async function: use await, loops and filters, and `return` only what is needed. Globals: "
     + ", ".join(sorted({m.split('.')[0] for m in METHODS})) + " and console.log. Each method takes one object "
     "argument. No fetch, no require, no timers. Use search() and describe() to find methods and box tools first. "
     f"Limits per run: {LIMITS['maxCalls']} method calls, {LIMITS['cpuMs'] // 1000} s of CPU, {int(WALL_SECONDS)} s "
-    "in total, 256 KB result. Tools that change something can't run from a snippet: call them as plain tools."
+    "in total, 256 KB result. Tools that change something can't run from a snippet: call them as plain tools. "
+    "If your client runs Code Mode itself, call the box tools directly instead; use execute when it doesn't."
 )
+
+# Largest text answer a client should keep inline for the code tools (Claude Code reads
+# _meta["anthropic/maxResultSizeChars"]; without it a result over 50,000 characters goes to a file).
+MAX_RESULT_CHARS = 300_000
+_OBJ = {"type": "object"}
+OUTPUT = {
+    "search": {"type": "object", "required": ["results"], "properties": {
+        "query": {"type": ["string", "null"]},
+        "results": {"type": "array", "items": {"type": "object", "required": ["kind", "name"], "properties": {
+            "kind": {"type": "string", "enum": ["method", "box tool"]}, "name": {"type": "string"},
+            "summary": {"type": "string"}, "boxes": {"type": "array", "items": {"type": "string"}},
+            "read_only": {"type": "boolean"}}}}}},
+    "describe": {"type": "object", "required": ["results"], "properties": {
+        "results": {"type": "array", "items": {"type": "object", "required": ["name"], "properties": {
+            "name": {"type": "string"}, "kind": {"type": "string"}, "error": {"type": "string"},
+            "input": _OBJ, "read_only": {"type": "boolean"}}}}}},
+    "execute": {"type": "object", "required": ["ok"], "properties": {
+        "ok": {"type": "boolean"}, "value": {}, "error": {"type": "string"},
+        "logs": {"type": "array"}, "calls": {"type": "integer"}}},
+}
 
 
 def code_tools() -> list[types.Tool]:
     ro = lambda title: types.ToolAnnotations(title=title, readOnlyHint=True, destructiveHint=False,  # noqa: E731
                                              idempotentHint=True, openWorldHint=False)
+    meta = {"anthropic/maxResultSizeChars": MAX_RESULT_CHARS}
     return [
         types.Tool(name="search", title="Find API methods and box tools",
-                   description="Searches the Code Mode API and every box's tools by words. Returns names and one "
-                               "line each; call describe() for the full input.",
+                   description="Box tool search: find aiteam box tools and Code Mode API methods by keywords, across "
+                               "every box in this connection. Returns names and one line each; call describe() for "
+                               "the full input. Searches box tools only, not your client's own tools.",
                    inputSchema={"type": "object", "additionalProperties": False, "required": ["query"],
                                 "properties": {"query": {"type": "string", "maxLength": 200},
                                                "limit": _LIM(20, 100)}},
-                   annotations=ro("Find API methods and box tools")),
+                   outputSchema=OUTPUT["search"], annotations=ro("Find API methods and box tools"), _meta=meta),
         types.Tool(name="describe", title="Describe API methods or box tools",
-                   description="Full input schema of the methods (for example kanban.list) or box tools (box/tool, "
-                               "for example box-a/kanban_list) named.",
+                   description="Box tool details: full input schema of the Code Mode methods (for example kanban.list) "
+                               "or box tools (box/tool, for example box-a/kanban_list) named.",
                    inputSchema={"type": "object", "additionalProperties": False, "required": ["names"],
                                 "properties": {"names": {"type": "array", "maxItems": 20,
                                                          "items": {"type": "string", "maxLength": 200}}}},
-                   annotations=ro("Describe API methods or box tools")),
+                   outputSchema=OUTPUT["describe"], annotations=ro("Describe API methods or box tools"), _meta=meta),
         types.Tool(name="execute", title="Run a snippet over your boxes",
                    description=INSTRUCTIONS,
                    inputSchema={"type": "object", "additionalProperties": False, "required": ["code"],
                                 "properties": {"code": {"type": "string", "maxLength": MAX_CODE,
                                                         "description": "Body of an async function. Example: "
                                                         "const b = await boxes.list(); return b.map(x => x.box)"}}},
-                   annotations=ro("Run a snippet over your boxes")),
+                   outputSchema=OUTPUT["execute"], annotations=ro("Run a snippet over your boxes"), _meta=meta),
     ]
 
 
-def _result(data: Any, *, error: bool = False, head: str = "") -> types.CallToolResult:
-    text = json.dumps(data, ensure_ascii=False)
-    return types.CallToolResult(content=[types.TextContent(type="text", text=(head + "\n" + text) if head else text)],
-                                structuredContent=data if isinstance(data, dict) else {"value": data}, isError=error)
+def _result(data: Any, *, error: bool = False) -> types.CallToolResult:
+    """JSON in structuredContent and the same JSON as text (MCP: structured results also come serialized)."""
+    data = data if isinstance(data, dict) else {"value": data}
+    return types.CallToolResult(content=[types.TextContent(type="text", text=json.dumps(data, ensure_ascii=False))],
+                                structuredContent=data, isError=error)
 
 
 def _words(s: str) -> set[str]:
@@ -277,7 +303,7 @@ class CodeMode:
                 rows.append((score, row))
         rows.sort(key=lambda r: (-r[0], r[1]["name"]))
         out = [r for _, r in rows[:max(1, min(limit, 100))]]
-        return _result({"query": args.get("query"), "results": out}, head=f"{len(out)} matches.")
+        return _result({"query": args.get("query"), "results": out})
 
     async def describe(self, c: "Caller", t: "Targets", args: dict) -> types.CallToolResult:
         names = [n for n in (args.get("names") or []) if isinstance(n, str)][:20]
@@ -358,9 +384,7 @@ class CodeMode:
                     done = await self._run(c, code)
             except TimeoutError:
                 done = {"ok": False, "error": f"time limit reached ({self.wall:g} s in total)"}
-        ok = bool(done.get("ok"))
-        head = "Done." if ok else f"Failed: {done.get('error')}"
-        return _result(done, error=not ok, head=head)
+        return _result(done, error=not done.get("ok"))
 
     async def _run(self, c: "Caller", code: str) -> dict:
         d = str(self.sandbox_dir)

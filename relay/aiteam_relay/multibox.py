@@ -47,8 +47,23 @@ INSTRUCTIONS = (
     "This connection reaches one or more aiteam.space boxes. Call boxes_list to see them and whether each one is up. "
     "Every tool takes a `box` argument (the box name from boxes_list); with a single box it can be left out. "
     "kanban_list, kanban_read and memory_read also take box=\"all\" to read every box at once. calendar_post adds a "
-    "post to a content calendar for review; it never publishes."
+    "post to a content calendar for review; it never publishes. Every result is JSON in structuredContent, with the "
+    "same JSON as text. If your client runs Code Mode itself, call the box tools directly; use execute (when this "
+    "connection offers it) when it doesn't, never both."
 )
+
+# Largest text answer a client should keep inline (Claude Code: _meta["anthropic/maxResultSizeChars"]; without it a
+# result over 50,000 characters goes to a file). Fan-out answers are capped at MAX_FANOUT_BYTES.
+MAX_RESULT_CHARS = 300_000
+BIG = {"anthropic/maxResultSizeChars": MAX_RESULT_CHARS}
+BOXES_LIST_OUTPUT = {
+    "type": "object", "required": ["count", "boxes", "truncated"],
+    "properties": {
+        "scope_rule": {"type": ["string", "null"]}, "project_name": {"type": ["string", "null"]},
+        "count": {"type": "integer"}, "answering": {"type": "integer"}, "truncated": {"type": "boolean"},
+        "boxes": {"type": "array", "items": {"type": "object", "required": ["box", "ok"], "properties": {
+            "box": {"type": "string"}, "ok": {"type": "boolean"}, "error": {"type": "string"},
+            "health": {}}}}}}
 
 
 @dataclass(frozen=True)
@@ -82,6 +97,10 @@ class Caller:
 
 
 def _text(msg: str, *, error: bool = True, data: dict | None = None) -> types.CallToolResult:
+    """A short message result. Errors carry {"ok": false, "error": msg} as structured content too, so code that reads
+    the structured result (a client's own Code Mode) sees the same failure the text says."""
+    if data is None and error:
+        data = {"ok": False, "error": msg}
     return types.CallToolResult(content=[types.TextContent(type="text", text=msg)], structuredContent=data,
                                 isError=error)
 
@@ -89,6 +108,30 @@ def _text(msg: str, *, error: bool = True, data: dict | None = None) -> types.Ca
 def _json_result(data: dict, *, error: bool = False) -> types.CallToolResult:
     return types.CallToolResult(content=[types.TextContent(type="text", text=json.dumps(data, ensure_ascii=False))],
                                 structuredContent=data, isError=error)
+
+
+def structured(r: types.CallToolResult, tool: types.Tool | None = None) -> types.CallToolResult:
+    """A box's result with structured content, so code (a client's own Code Mode, or execute) can read it.
+
+    A box that already sends structuredContent, or whose tool declares an outputSchema (the client checks the result
+    against it), is passed on unchanged. Otherwise text that is one JSON object becomes the structured content as is;
+    any other JSON value comes as {"value": ...}; plain text as {"text": ...}. The text content is never changed."""
+    if r.structuredContent is not None or (tool is not None and tool.outputSchema is not None):
+        return r
+    texts = [c.text for c in r.content if isinstance(c, types.TextContent)]
+    if not texts or len(texts) != len(r.content):
+        return r  # images, files or resources: leave the result as the box sent it
+    joined = "\n".join(texts)
+    try:
+        val = json.loads(joined)
+    except ValueError:
+        val = None
+        data: dict = {"text": joined}
+    else:
+        data = val if isinstance(val, dict) else {"value": val}
+    if r.isError and "error" not in data:
+        data = {"ok": False, "error": joined[:2000]} if val is None else {"ok": False, "error": val}
+    return r.model_copy(update={"structuredContent": data})
 
 
 def _result_data(r: types.CallToolResult) -> Any:
@@ -167,7 +210,7 @@ def native_tools(t: Targets, per_box: float = 10.0) -> list[types.Tool]:
                                f"calendar) and a live health check of each, {per_box:g} s per box. A box that does "
                                "not answer shows ok=false with the reason; the others still answer.",
                    inputSchema={"type": "object", "properties": {}, "additionalProperties": False},
-                   annotations=ro("Boxes in this connection")),
+                   outputSchema=BOXES_LIST_OUTPUT, annotations=ro("Boxes in this connection"), _meta=BIG),
         types.Tool(name="kanban_list", title="List task boards",
                    description="Cards on a box's task board, read-only. box=\"all\" reads every box at once and "
                                f"groups the answer per box (ok/error per box, {per_box:g} s each).",
@@ -177,7 +220,7 @@ def native_tools(t: Targets, per_box: float = 10.0) -> list[types.Tool]:
                                                "assignee": {"type": "string",
                                                             "pattern": "^[A-Za-z0-9_.@:-]{1,64}$"},
                                                "limit": lim(50, 200)}},
-                   annotations=ro("List task boards")),
+                   annotations=ro("List task boards"), _meta=BIG),
         types.Tool(name="kanban_read", title="Read a task card",
                    description="One card from a box's task board, read-only. box=\"all\" asks every box for that "
                                "card id and groups the answers per box.",
@@ -185,7 +228,7 @@ def native_tools(t: Targets, per_box: float = 10.0) -> list[types.Tool]:
                                 "required": ["id", "box"] if multi else ["id"],
                                 "properties": {"box": fan, "id": {"type": "string",
                                                                   "pattern": "^[A-Za-z0-9_.:-]{1,64}$"}}},
-                   annotations=ro("Read a task card")),
+                   annotations=ro("Read a task card"), _meta=BIG),
         types.Tool(name="memory_read", title="Search box memory",
                    description="Read-only search of a box's shared memory. box=\"all\" searches every box and groups "
                                "the answers per box.",
@@ -193,7 +236,7 @@ def native_tools(t: Targets, per_box: float = 10.0) -> list[types.Tool]:
                                 "required": ["box"] if multi else [],
                                 "properties": {"box": fan, "query": {"type": "string", "maxLength": 200},
                                                "limit": lim(20, 100)}},
-                   annotations=ro("Search box memory")),
+                   annotations=ro("Search box memory"), _meta=BIG),
         types.Tool(name="calendar_post", title="Add a post to a content calendar",
                    description="Adds a post to a content calendar in this connection for review. With date "
                                "(YYYY-MM-DD, board time zone) it waits for review on that day; without, it lands in "
@@ -360,9 +403,12 @@ class Router:
             except (BoxError, TimeoutError):
                 pass
         try:
-            return await self.pool.call(c.token, c.exp, target, plain, name, fwd, progress=progress)
+            r = await self.pool.call(c.token, c.exp, target, plain, name, fwd, progress=progress)
         except BoxError as e:
             return _text(f"{target.key}: {e}")
+        hit = self.pool.cached_tools(c.cache_id, target)
+        tool = next((tl for tl in (hit.tools or []) if tl.name == name), None) if hit is not None else None
+        return structured(r, tool)
 
     async def _call_data(self, c: Caller, plain: bool, target: Target, name: str, args: dict) -> dict:
         r = await self.pool.call(c.token, c.exp, target, plain, name, args, timeout=self.pool.fanout_timeout)
@@ -403,10 +449,8 @@ class Router:
         rows, cut = cap_rows(rows)
         data = {"scope_rule": t.scope_rule, "project_name": t.project_name, "count": len(t.targets),
                 "boxes": rows, "truncated": cut or t.truncated}
-        up = sum(1 for r in rows if r.get("ok"))
-        head = f"{len(t.targets)} boxes, {up} answering."
-        return types.CallToolResult(content=[types.TextContent(type="text", text=head + "\n" + json.dumps(
-            data, ensure_ascii=False))], structuredContent=data, isError=False)
+        data["answering"] = sum(1 for r in rows if r.get("ok"))
+        return _json_result(data)
 
     async def fan_tool(self, c: Caller, t: Targets, name: str, args: dict) -> types.CallToolResult:
         fwd = {k: v for k, v in args.items() if k != "box"}
@@ -420,7 +464,7 @@ class Router:
                 r = await self.pool.call(c.token, c.exp, one, c.plain_exchange(t), FANOUT_TOOLS[name], fwd)
             except BoxError as e:
                 return _text(f"{one.key}: {e}")
-            return r
+            return structured(r)
         plain = c.plain_exchange(t)
         self.warm(c, t)
 
@@ -435,10 +479,8 @@ class Router:
                  else {"box": x.key, "ok": True, "data": res}) for x, res in got]
         rows, cut = cap_rows(rows)
         ok = sum(1 for r in rows if r["ok"])
-        data = {"box": "all", "results": rows, "truncated": cut}
-        return types.CallToolResult(content=[types.TextContent(type="text", text=f"{ok} of {len(rows)} boxes "
-                                                               "answered.\n" + json.dumps(data, ensure_ascii=False))],
-                                    structuredContent=data, isError=ok == 0 and bool(rows))
+        data = {"box": "all", "answered": ok, "results": rows, "truncated": cut}
+        return _json_result(data, error=ok == 0 and bool(rows))
 
     async def calendar_post(self, c: Caller, t: Targets, args: dict) -> types.CallToolResult:
         key = args.get("calendar")

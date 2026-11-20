@@ -209,6 +209,9 @@ def create_app(settings: Settings | None = None, *, client: httpx.AsyncClient | 
         discover = discover_answer(body)
         if discover is not None:
             return discover
+        unsupported = unsupported_version(request, body)
+        if unsupported is not None:
+            return unsupported
         c = Caller(token, claims)
         try:
             await prefetch(router, c)
@@ -308,6 +311,30 @@ def discover_answer(body: bytes) -> Response | None:
     result = {"supportedVersions": versions, "capabilities": {"tools": {"listChanged": False}},
               "instructions": INSTRUCTIONS, "resultType": "complete"}
     return JSONResponse({"jsonrpc": "2.0", "id": msg["id"], "result": result})
+
+
+UNSUPPORTED_VERSION = -32022  # UnsupportedProtocolVersionError (MCP 2026-07-28, basic/versioning)
+
+
+def unsupported_version(request: Request, body: bytes) -> Response | None:
+    """A request at a protocol revision the relay does not speak (for example 2026-07-28, sent by a client that tries
+    the stateless revision first): 400 with an UnsupportedProtocolVersionError naming the revisions it does speak, as
+    the spec requires. The SDK would answer the same 400 with a generic error a client can't read, so it would not know
+    to retry with a supported revision. `initialize` negotiates in its body and goes to the SDK unchanged."""
+    from mcp.shared.version import SUPPORTED_PROTOCOL_VERSIONS
+    version = request.headers.get("mcp-protocol-version")
+    if not version or version in SUPPORTED_PROTOCOL_VERSIONS:
+        return None
+    try:
+        msg = json.loads(body)
+    except ValueError:
+        msg = None
+    if isinstance(msg, dict) and msg.get("method") == "initialize":
+        return None
+    rid = msg.get("id") if isinstance(msg, dict) and isinstance(msg.get("id"), (str, int)) else None
+    error = {"code": UNSUPPORTED_VERSION, "message": "Unsupported protocol version",
+             "data": {"supported": sorted(SUPPORTED_PROTOCOL_VERSIONS, reverse=True), "requested": version[:64]}}
+    return JSONResponse({"jsonrpc": "2.0", "id": rid, "error": error}, status_code=400)
 
 
 def main(argv: list[str] | None = None) -> None:
