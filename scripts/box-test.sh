@@ -70,6 +70,7 @@ run connector-tests connector
 # relay-tests.yml
 relay() {
   mkvenv "$VENV_ROOT/relay" -e "relay[test]"
+  (cd relay/sandbox && npm ci --silent --ignore-scripts)  # Code Mode sandbox; its tests skip without it
   cd relay
   "$VENV_ROOT/relay/bin/python" -m pytest -q
   "$VENV_ROOT/relay/bin/aiteam-relay" --help >/dev/null

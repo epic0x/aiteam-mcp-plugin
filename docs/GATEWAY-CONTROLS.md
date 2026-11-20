@@ -44,7 +44,7 @@ Native free-text replies are deliberately suppressed, not merely regex-redacted:
 
 ## Multiple configured destinations, not implicit fleet authorization
 
-Schemas derive from configured `sons`, never from hard-coded `dee` or guessed Davis identities. This does **not** authorize every owned Son from a singleton JWT.
+Schemas derive from configured `sons`, never from hard-coded or guessed Son names. This does **not** authorize every owned Son from a singleton JWT.
 
 A remote `SonLink` needs its own box URL/token, `son_id` for secure sign-in, and explicit `control_owners` list. No remote Son is sent to the local socket; no fallback is attempted on missing destinations or errors. The local first Son may use existing gate authority; remote destinations without an explicit owner grant are refused. Duplicate names and bad deployment data should be avoided; this is not a fleet-discovery mechanism.
 
@@ -56,10 +56,10 @@ Remote `son_model_*` and new controls use `POST <box>/v1/control`:
 
 The destination box must bind its caller token to `control_owner` and explicitly list its local Son in the caller's `sons` (legacy `*` alone is insufficient). `ai_control.son` is required for multi-Son boxes; a one-Son box derives it. Optional `ai_control.control_socket` selects its local hook socket. The connector forwards its verified subject in `X-Aiteam-Sub`; the box requires an exact match to the token-bound `control_owner` (the header alone never authenticates). The box rejects a request-supplied principal/identity and remote `son` selection. It returns an MCP CallToolResult. Sign-in still uses the existing `/v1/ai/*` proxy; missing remote `son_id` is refused before starting a login.
 
-**Release dependency:** the public relay is still singleton-transparent. Site #190 selected-grant foundation and the separate experimental selected-Son router are not folded into this PR. Davis credentials/grants and selected-router deployment are outside this work. Updating this PR alone cannot make all owned Sons appear through Claude or ChatGPT.
+**Release dependency:** the public relay is still singleton-transparent. Site #190 selected-grant foundation and the separate experimental selected-Son router are not folded into this PR. Per-Son credentials, grants and selected-router deployment are outside this work. Updating this PR alone cannot make all owned Sons appear through Claude or ChatGPT.
 
 ## Verification and activation
 
-Local tests cover fake authorized destinations over two real boxes and two real UNIX sockets, negative authentication, mismatched/stale selectors, forged identity fields, native handler exceptions and suppression of unstructured results. The installed-Hermes probe exercises real registry/dispatch, durable SessionStore and native approval configuration **only in an isolated temporary home**, with interrupt/reset side effects replaced by isolated test operations. It is not live Davis/Claude proof, a provider completion, or production session-stop proof.
+Local tests cover fake authorized destinations over two real boxes and two real UNIX sockets, negative authentication, mismatched/stale selectors, forged identity fields, native handler exceptions and suppression of unstructured results. The installed-Hermes probe exercises real registry/dispatch, durable SessionStore and native approval configuration **only in an isolated temporary home**, with interrupt/reset side effects replaced by isolated test operations. It is not a live client proof, a provider completion, or production session-stop proof.
 
 Run connector and relay suites as documented in `MODEL-CONTROL.md`; plugin tests require Hermes dependencies. The opt-in `tests/test_installed_gateway_controls.py` requires a fresh `HERMES_HOME` named `control-probe-*` and the installed Hermes import path. No image build, Actions workflow, push, merge, deployment, reload, credential modification or real session interruption is part of this change. Activation still requires the consuming Son image to ship the updated hook and a planned owner-approved gateway start.

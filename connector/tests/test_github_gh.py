@@ -30,7 +30,7 @@ CASES = {
     "github_run_list": ({"repo": "epic0x/aiteam", "branch": "main"}, ["run", "list", R, "--branch=main"]),
     "github_run_view": ({"repo": "epic0x/aiteam", "run_id": 123, "log_failed": True}, ["run", "view", "123", R, "--log-failed"]),
     "github_workflow_list": ({"repo": "epic0x/aiteam"}, ["workflow", "list", R]),
-    "github_search": ({"kind": "prs", "query": "--help is:open"}, ["search", "prs", "--", "--help is:open"]),
+    "github_search": ({"kind": "prs", "query": "--help is:open"}, ["search", "prs", "--", "--help", "is:open"]),
     "github_issue_create": ({"repo": "epic0x/aiteam", "title": "-x; rm -rf /", "body": "$(id)", "label": ["bug"]},
                             ["issue", "create", R, "--title=-x; rm -rf /", "--body=$(id)", "--label=bug"]),
     "github_issue_comment": ({"repo": "epic0x/aiteam", "number": 3, "body": "--repo=evil/x"},
@@ -266,6 +266,25 @@ def test_allowlist_allows_and_scopes_search():
     assert build_argv("github_api", {"path": "/user"}, A)[0][-1] == "/user"
     argv, _ = build_argv("github_search", {"kind": "prs", "query": "is:open"}, A)
     assert argv == ["search", "prs", "--owner=epic0x", "--", "is:open"]
+    argv, _ = build_argv("github_search", {"kind": "code", "query": "org:epic0x neon"}, A)
+    assert argv == ["search", "code", "--owner=epic0x", "--", "org:epic0x", "neon"]
+
+
+@pytest.mark.parametrize("query,words", [
+    ("org:x neon", ["org:x", "neon"]),
+    ('"exact phrase" repo:a/b', ["exact phrase", "repo:a/b"]),
+    ('label:"bug fix" is:open', ["label:bug fix", "is:open"]),
+    ("  org:x   neon\tdb  ", ["org:x", "neon", "db"]),
+    ('"unclosed phrase', ["unclosed phrase"]),
+    ('""', []),
+    ("", []),
+    ("--help is:open", ["--help", "is:open"]),
+])
+def test_search_query_split_into_words(query, words):
+    from aiteam_connector.github_gh import split_query
+    assert split_query(query) == words
+    argv, _ = build_argv("github_search", {"kind": "code", "query": query})
+    assert argv == ["search", "code", "--", *words]
 
 
 async def test_allowlist_from_config(tmp_path):

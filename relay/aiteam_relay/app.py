@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 import contextlib
+import json
 import logging
 import os
 import time
@@ -31,6 +32,36 @@ def _env(name: str, default: str) -> str:
     return v or default
 
 
+def _seconds(name: str, default: float) -> float:
+    """A positive number of seconds from the environment; anything else keeps the default."""
+    raw = os.environ.get(name, "").strip()
+    if not raw:
+        return default
+    try:
+        v = float(raw)
+    except ValueError:
+        v = 0.0
+    if not 0 < v <= 3600:
+        log.warning("%s=%r is not a number of seconds between 0 and 3600; using %g", name, raw[:20], default)
+        return default
+    return v
+
+
+def _count(name: str, default: int, top: int = 64) -> int:
+    """A whole number between 1 and `top` from the environment; anything else keeps the default."""
+    raw = os.environ.get(name, "").strip()
+    if not raw:
+        return default
+    try:
+        v = int(raw)
+    except ValueError:
+        v = 0
+    if not 1 <= v <= top:
+        log.warning("%s=%r is not a whole number between 1 and %d; using %d", name, raw[:20], top, default)
+        return default
+    return v
+
+
 @dataclass
 class Settings:
     public_url: str = field(default_factory=lambda: _env("RELAY_PUBLIC_URL", "https://mcp.aiteam.space").rstrip("/"))
@@ -42,6 +73,22 @@ class Settings:
     challenge_file: str = field(default_factory=lambda: os.environ.get("OPENAI_APPS_CHALLENGE_FILE", ""))
     # on = the relay is its own MCP server over every box of the grant (multibox.py); off = one-box stream proxy
     multi_box: bool = field(default_factory=lambda: _env("RELAY_MULTI_BOX", "off").lower() in ("on", "1", "true"))
+    # multi-box time limits, seconds (docs/RELAY.md, Multiple boxes > Limits)
+    box_timeout: float = field(default_factory=lambda: _seconds("RELAY_BOX_TIMEOUT", 30.0))
+    targets_timeout: float = field(default_factory=lambda: _seconds("RELAY_TARGETS_TIMEOUT", 15.0))
+    fanout_timeout: float = field(default_factory=lambda: _seconds("RELAY_FANOUT_TIMEOUT", 10.0))
+    list_timeout: float = field(default_factory=lambda: _seconds("RELAY_LIST_TIMEOUT", 25.0))
+    tools_ttl: float = field(default_factory=lambda: _seconds("RELAY_TOOLS_TTL", 300.0))
+    # token exchanges in flight at once in this process, all connections and boxes together (exchange.py)
+    exchange_concurrency: int = field(default_factory=lambda: _count("RELAY_EXCHANGE_CONCURRENCY", 2))
+    # one POST to the token route waits this long (the route gives its own storage up to 20 s)
+    exchange_timeout: float = field(default_factory=lambda: min(_seconds("RELAY_EXCHANGE_TIMEOUT", 25.0), 60.0))
+    # boxes asked at once in boxes_list and `all` reads
+    fanout_concurrency: int = field(default_factory=lambda: _count("RELAY_FANOUT_CONCURRENCY", 4))
+    # Code Mode (codemode.py): search / describe / execute on top of the multi-box relay. Needs multi_box.
+    code_mode: bool = field(default_factory=lambda: _env("RELAY_CODE_MODE", "off").lower() in ("on", "1", "true"))
+    # extra headers on the relay's own calls to the issuer only (issuer_headers.py); unset = off
+    issuer_headers_file: str = field(default_factory=lambda: os.environ.get("RELAY_ISSUER_HEADERS_FILE", "").strip())
 
     @property
     def resource(self) -> str:
@@ -69,27 +116,38 @@ class Settings:
 
 def create_app(settings: Settings | None = None, *, client: httpx.AsyncClient | None = None,
                jwks=None, box_transport: httpx.AsyncBaseTransport | None = None,
-               clock: Callable[[], float] = time.time, box_timeout: float | None = None) -> Starlette:
-    """`box_transport` / `clock` / `box_timeout` exist for tests (multi-box mode only)."""
+               clock: Callable[[], float] = time.time, box_timeout: float | None = None,
+               code_mode_opts: dict | None = None) -> Starlette:
+    """`box_transport` / `clock` / `box_timeout` exist for tests (multi-box mode only). `box_timeout` sets the box,
+    fan-out and tools/list limits at once; without it they come from Settings."""
     s = settings or Settings()
     http = client or httpx.AsyncClient(timeout=httpx.Timeout(connect=10, read=None, write=30, pool=10),
                                        headers={"user-agent": f"aiteam-relay/{__version__}"},
                                        follow_redirects=False)
+    if s.issuer_headers_file:  # a bad file stops the start (IssuerHeadersError), it never runs half set up
+        from . import issuer_headers
+        issuer_headers.install(http, s.issuer, issuer_headers.load(s.issuer_headers_file))
     keys = jwks or Jwks(s.issuer + "/oauth/jwks", http)
     exchanger = Exchanger(http, token_url=s.issuer + "/oauth/token", suffix=s.son_host_suffix,
-                          relay_host=s.relay_host, clock=clock)
+                          relay_host=s.relay_host, clock=clock, concurrency=s.exchange_concurrency,
+                          request_timeout=s.exchange_timeout)
     multi = None
+    router = None
     if s.multi_box:
         from mcp.server.streamable_http_manager import StreamableHTTPSessionManager
 
-        from .boxes import BOX_TIMEOUT, BoxPool
+        from .boxes import BoxPool
         from .multibox import Router, build_server
         from .targets import TargetsClient
         targets = TargetsClient(http, url=s.issuer + "/oauth/targets", suffix=s.son_host_suffix,
-                                relay_host=s.relay_host, clock=clock)
-        pool = BoxPool(exchanger, transport=box_transport, clock=clock,
-                       box_timeout=BOX_TIMEOUT if box_timeout is None else box_timeout)
-        router = Router(targets, exchanger, pool, clock=clock)
+                                relay_host=s.relay_host, clock=clock, timeout=s.targets_timeout)
+        if box_timeout is None:
+            limits = dict(box_timeout=s.box_timeout, fanout_timeout=s.fanout_timeout, list_timeout=s.list_timeout)
+        else:
+            limits = dict(box_timeout=box_timeout, fanout_timeout=box_timeout, list_timeout=box_timeout)
+        pool = BoxPool(exchanger, transport=box_transport, clock=clock, tools_ttl=s.tools_ttl,
+                       concurrency=s.fanout_concurrency, **limits)
+        router = Router(targets, exchanger, pool, clock=clock, code_mode=s.code_mode, code_mode_opts=code_mode_opts)
         # Stateless: every HTTP request is authenticated and scoped on its own; no MCP session outlives a request.
         multi = StreamableHTTPSessionManager(app=build_server(router), json_response=False, stateless=True)
 
@@ -138,6 +196,22 @@ def create_app(settings: Settings | None = None, *, client: httpx.AsyncClient | 
 
     async def multi_box(request: Request, token: str, claims: dict) -> Response:
         from .multibox import SCOPE_KEY, Caller, prefetch
+        # Stateless across processes (docs/RELAY.md, Sessions): no MCP session is kept, so nothing a later request
+        # could depend on. GET and DELETE never reach the SDK, never fetch targets and never exchange a token.
+        if request.method == "GET":
+            return Response(status_code=405, headers={"Allow": "POST, DELETE"})  # no standalone stream to hold open
+        if request.method == "DELETE":
+            return Response(status_code=200)  # no session to end: done, whatever Mcp-Session-Id says
+        body = await read_body(request)
+        if body is None:
+            return JSONResponse({"error": "too_large", "error_description": "request body over 4 MiB"},
+                                status_code=413)
+        discover = discover_answer(body)
+        if discover is not None:
+            return discover
+        unsupported = unsupported_version(request, body)
+        if unsupported is not None:
+            return unsupported
         c = Caller(token, claims)
         try:
             await prefetch(router, c)
@@ -147,7 +221,7 @@ def create_app(settings: Settings | None = None, *, client: httpx.AsyncClient | 
             return upstream_error(502, str(e))
         request.scope[SCOPE_KEY] = c
         # Only the MCP transport headers reach the SDK; the bearer stays here (it is in the scope as Caller).
-        return _Asgi(multi.handle_request)
+        return _Asgi(multi.handle_request, body)
 
     routes = [
         Route("/.well-known/oauth-protected-resource", prm, methods=["GET"]),
@@ -162,6 +236,9 @@ def create_app(settings: Settings | None = None, *, client: httpx.AsyncClient | 
         async with contextlib.AsyncExitStack() as stack:
             if multi is not None:
                 await stack.enter_async_context(multi.run())
+                stack.push_async_callback(pool.tools_cache.aclose)
+            if router is not None and router.code is not None:
+                await router.code.ready()  # logs "Code Mode is on" or why the code tools are not offered
             yield
         if client is None:
             await http.aclose()
@@ -169,18 +246,95 @@ def create_app(settings: Settings | None = None, *, client: httpx.AsyncClient | 
     app = Starlette(routes=routes, lifespan=lifespan)
     app.router.redirect_slashes = False
     app.state.settings, app.state.exchanger, app.state.http = s, exchanger, http
+    if multi is not None:
+        app.state.pool, app.state.targets = pool, targets
     return app
 
 
 class _Asgi(Response):
-    """Hand the rest of a request to a raw ASGI app (the MCP SDK transport) from a Starlette endpoint."""
+    """Hand the rest of a request to a raw ASGI app (the MCP SDK transport) from a Starlette endpoint. `body`: the
+    request body already read here, replayed to the app as one message."""
 
-    def __init__(self, asgi) -> None:  # noqa: D107 (no body of its own)
+    def __init__(self, asgi, body: bytes | None = None) -> None:  # noqa: D107 (no body of its own)
         self.asgi = asgi
+        self.body_bytes = body
         self.background = None
 
     async def __call__(self, scope, receive, send) -> None:
-        await self.asgi(scope, receive, send)
+        if self.body_bytes is None:
+            await self.asgi(scope, receive, send)
+            return
+        sent = False
+
+        async def replay():
+            nonlocal sent
+            if not sent:
+                sent = True
+                return {"type": "http.request", "body": self.body_bytes, "more_body": False}
+            return await receive()  # after the body: wait for the disconnect, as a server would
+        await self.asgi(scope, replay, send)
+
+
+MAX_BODY = 4 * 1024 * 1024  # the SDK's own POST body limit (DEFAULT_MAX_REQUEST_BODY_SIZE)
+
+
+async def read_body(request: Request, limit: int = MAX_BODY) -> bytes | None:
+    """The whole POST body, or None once it passes `limit` bytes (read no further)."""
+    out = bytearray()
+    async for chunk in request.stream():
+        out += chunk
+        if len(out) > limit:
+            return None
+    return bytes(out)
+
+
+def discover_answer(body: bytes) -> Response | None:
+    """A `server/discover` probe from a client that tries the stateless protocol revision first (2026-07-28).
+
+    The relay speaks the session-era revisions only (the SDK's list). The SDK would answer the probe with a 400 and
+    a non-standard body; a client then falls back to `initialize`, but the 400 shows in every client session. The
+    relay answers the probe itself instead: a DiscoverResult that names only the revisions it supports. A client
+    reads that as "use initialize" and does, with no error status (a dual-era client treats a discover answer
+    without a modern revision as a legacy server). Nothing is fetched, exchanged or stored. Every other request goes
+    to the SDK unchanged, including one at a revision the relay does not speak (a 400, as the spec requires)."""
+    from mcp.shared.version import SUPPORTED_PROTOCOL_VERSIONS
+    if b"server/discover" not in body:
+        return None
+    try:
+        msg = json.loads(body)
+    except ValueError:
+        return None
+    if not isinstance(msg, dict) or msg.get("method") != "server/discover" or "id" not in msg:
+        return None
+    versions = sorted(SUPPORTED_PROTOCOL_VERSIONS, reverse=True)
+    from .multibox import INSTRUCTIONS
+    result = {"supportedVersions": versions, "capabilities": {"tools": {"listChanged": False}},
+              "instructions": INSTRUCTIONS, "resultType": "complete"}
+    return JSONResponse({"jsonrpc": "2.0", "id": msg["id"], "result": result})
+
+
+UNSUPPORTED_VERSION = -32022  # UnsupportedProtocolVersionError (MCP 2026-07-28, basic/versioning)
+
+
+def unsupported_version(request: Request, body: bytes) -> Response | None:
+    """A request at a protocol revision the relay does not speak (for example 2026-07-28, sent by a client that tries
+    the stateless revision first): 400 with an UnsupportedProtocolVersionError naming the revisions it does speak, as
+    the spec requires. The SDK would answer the same 400 with a generic error a client can't read, so it would not know
+    to retry with a supported revision. `initialize` negotiates in its body and goes to the SDK unchanged."""
+    from mcp.shared.version import SUPPORTED_PROTOCOL_VERSIONS
+    version = request.headers.get("mcp-protocol-version")
+    if not version or version in SUPPORTED_PROTOCOL_VERSIONS:
+        return None
+    try:
+        msg = json.loads(body)
+    except ValueError:
+        msg = None
+    if isinstance(msg, dict) and msg.get("method") == "initialize":
+        return None
+    rid = msg.get("id") if isinstance(msg, dict) and isinstance(msg.get("id"), (str, int)) else None
+    error = {"code": UNSUPPORTED_VERSION, "message": "Unsupported protocol version",
+             "data": {"supported": sorted(SUPPORTED_PROTOCOL_VERSIONS, reverse=True), "requested": version[:64]}}
+    return JSONResponse({"jsonrpc": "2.0", "id": rid, "error": error}, status_code=400)
 
 
 def main(argv: list[str] | None = None) -> None:

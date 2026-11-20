@@ -6,6 +6,7 @@ address (`safe_son_url`); a target that fails it is never called and shows up in
 """
 from __future__ import annotations
 
+import asyncio
 import logging
 import re
 import time
@@ -19,6 +20,7 @@ from .exchange import ExchangeError, InvalidGrant, safe_son_url, token_key
 log = logging.getLogger("aiteam_relay.targets")
 
 TARGETS_TTL = 30
+TARGETS_TIMEOUT = 15.0  # one GET /oauth/targets (env RELAY_TARGETS_TIMEOUT)
 MAX_TARGETS = 50
 CACHE_MAX = 10_000
 KINDS = ("son", "node")
@@ -50,6 +52,7 @@ class Targets:
     rejected: list[dict] = field(default_factory=list)  # {box, error}: never called
     truncated: bool = False
     expires_at: float = 0.0
+    grant_v: int | None = None  # what aiteam.space says the grant is now (it can differ from the token's claims)
 
     def find(self, key: str) -> Target | None:
         return next((t for t in self.targets if t.key == key), None)
@@ -105,19 +108,22 @@ def parse_targets(body: object, *, suffix: str, relay_host: str) -> Targets:
                           project_id=pid if isinstance(pid, str) else None,
                           project_name=pname if isinstance(pname, str) else None,
                           calendar=is_calendar(raw, slug or "")))
-    rule, pname = body.get("scope_rule"), body.get("project_name")
+    rule, pname, gv = body.get("scope_rule"), body.get("project_name"), body.get("grant_v")
     return Targets(out, scope_rule=rule if isinstance(rule, str) else None,
                    project_name=pname if isinstance(pname, str) else None, rejected=rejected,
-                   truncated=len(raw_list) > MAX_TARGETS)
+                   truncated=len(raw_list) > MAX_TARGETS,
+                   grant_v=gv if isinstance(gv, int) and not isinstance(gv, bool) else None)
 
 
 class TargetsClient:
     def __init__(self, client: httpx.AsyncClient, *, url: str, suffix: str, relay_host: str,
-                 clock: Callable[[], float] = time.time, ttl: float = TARGETS_TTL) -> None:
+                 clock: Callable[[], float] = time.time, ttl: float = TARGETS_TTL,
+                 timeout: float = TARGETS_TIMEOUT) -> None:
         self.client, self.url, self.suffix, self.relay_host = client, url, suffix, relay_host
-        self.clock, self.ttl = clock, ttl
+        self.clock, self.ttl, self.timeout = clock, ttl, timeout
         self.cache: dict[str, Targets] = {}
         self.calls = 0
+        self._inflight: dict[str, asyncio.Task] = {}  # one GET per token at a time: concurrent requests join it
 
     def drop(self, subject_token: str) -> None:
         self.cache.pop(token_key(subject_token), None)
@@ -128,7 +134,22 @@ class TargetsClient:
         hit = self.cache.get(key)
         if hit and hit.expires_at > now:
             return hit
+        task = self._inflight.get(key)
+        if task is None:
+            task = self._inflight[key] = asyncio.get_running_loop().create_task(
+                self._load(key, subject_token, subject_exp))
+
+            def done(t: asyncio.Task, k: str = key) -> None:
+                if self._inflight.get(k) is t:
+                    del self._inflight[k]
+                if not t.cancelled():
+                    t.exception()  # retrieved, so a load whose callers all left logs nothing
+            task.add_done_callback(done)
+        return await asyncio.shield(task)
+
+    async def _load(self, key: str, subject_token: str, subject_exp: float | None) -> Targets:
         got = await self._fetch(subject_token)
+        now = self.clock()
         got.expires_at = now + self.ttl
         if subject_exp is not None:
             got.expires_at = min(got.expires_at, float(subject_exp))
@@ -144,7 +165,8 @@ class TargetsClient:
         self.calls += 1
         try:
             r = await self.client.get(self.url, headers={"Accept": "application/json",
-                                                         "Authorization": f"Bearer {subject_token}"}, timeout=5)
+                                                         "Authorization": f"Bearer {subject_token}"},
+                                  timeout=self.timeout)
         except httpx.HTTPError as e:
             raise ExchangeError(f"targets endpoint unreachable ({type(e).__name__})") from None
         try:

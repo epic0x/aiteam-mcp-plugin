@@ -5,3 +5,4 @@ connector/build/
 relay/build/
 .id-scan-deny.txt
 dist/
+relay/sandbox/node_modules/

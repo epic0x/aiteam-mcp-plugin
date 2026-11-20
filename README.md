@@ -14,12 +14,13 @@ sign it in, switch its model, steer its sessions, set its schedules and hand it 
 
 ## Contents
 1. [Get started in 3 minutes](#get-started-in-3-minutes)
-2. [Guided first run: "Help me set up aiteam"](#guided-first-run-help-me-set-up-aiteam)
-3. [What the connector controls](#what-the-connector-controls)
-4. [Every Hermes command, and how to run it here](#every-hermes-command-and-how-to-run-it-here)
-5. [Security](#security)
-6. [Free and paid](#free-and-paid)
-7. [For developers](#for-developers)
+2. [One URL for every box](#one-url-for-every-box)
+3. [Guided first run: "Help me set up aiteam"](#guided-first-run-help-me-set-up-aiteam)
+4. [What the connector controls](#what-the-connector-controls)
+5. [Every Hermes command, and how to run it here](#every-hermes-command-and-how-to-run-it-here)
+6. [Security](#security)
+7. [Free and paid](#free-and-paid)
+8. [For developers](#for-developers)
 
 ## Get started in 3 minutes
 1. **Create a Son** at https://aiteam.space/new (sign in with Google).
@@ -52,6 +53,27 @@ The ChatGPT plugin package lives in [`package/`](package/) (build the ZIP with `
 
 **One Son's own URL.** Each Son also has its own address, `https://<slug>.aiteam.space/mcp`. It works the same way
 and skips the Son picker, because the URL already names the Son.
+
+## One URL for every box
+`https://mcp.aiteam.space/mcp` reaches every box you pick on the consent page (Sons, nodes and content calendars),
+in one connection.
+- **Sign-in:** OAuth with your aiteam.space account. The client's token stays at the relay. For each call the relay
+  exchanges it at aiteam.space for a short-lived token for that one box (5 minutes at most), so a box never sees
+  your client token and revoking the connection on aiteam.space stops it within 5 minutes.
+- **`box` argument:** every box tool takes `box`, the box name. With a single box it can be left out.
+  `boxes_list` shows every box in the connection with a live health check of each.
+- **Read every box at once:** `kanban_list`, `kanban_read` and `memory_read` take `box="all"` and group the answers
+  per box. `calendar_post` adds a post to a content calendar for review; it never publishes.
+- **Code Mode:** `search`, `describe` and `execute` run one JavaScript snippet over every box and return only its
+  result. The snippet runs in a sandbox (no network, files or processes) and can only call read-only tools: a tool
+  that changes something answers "needs approval" and runs as a plain tool instead. Limits per run: 50 calls, 10 s
+  of CPU, 50 s in total, 256 KB result. If your client runs Code Mode itself (Claude Code in a terminal), call the
+  box tools directly; use `execute` from claude.ai, Claude Desktop and ChatGPT.
+- **Results** come as JSON in `structuredContent`, with the same JSON as text. Read-only tools are marked
+  read-only and safe to repeat; tools that change your Son's model, sessions or approvals, and paid add-on tools,
+  ask you on every call.
+
+Details, limits and flags: [docs/RELAY.md](docs/RELAY.md).
 
 ## Guided first run: "Help me set up aiteam"
 Say **"Help me set up aiteam"** in Claude or ChatGPT (or pick the `setup_aiteam` prompt in Claude's prompt menu).
@@ -217,8 +239,16 @@ https://aiteam.space/pricing. Map: [docs/ENTITLEMENTS.md](docs/ENTITLEMENTS.md).
   [connector/aiteam_connector/intro.py](connector/aiteam_connector/intro.py).
 - **Son-side skills** (chat threads, team coordination, notifications, sync) come from
   [epic0x/aiteam-skills](https://github.com/epic0x/aiteam-skills), pinned in [skills.lock.json](skills.lock.json).
-- **Tests:** `cd connector && pip install -e ".[test]" && python -m pytest -q`; package and plugin checks in
-  `tests/`. Local runner: `scripts/box-test.sh`.
+- **Relay flags:** `RELAY_MULTI_BOX=on` (one URL for every box), `RELAY_CODE_MODE=on` (search, describe, execute;
+  needs the multi-box flag, Node 25 or later and `npm ci` in `relay/sandbox`), `RELAY_EXCHANGE_TIMEOUT` (25 s),
+  `RELAY_FANOUT_CONCURRENCY` (4). Both on/off flags are off by default. Full table: [docs/RELAY.md](docs/RELAY.md),
+  Environment.
+- **Relay deploy:** install with `uv pip install -e ./relay`, run `aiteam-relay` (127.0.0.1:8790) under systemd
+  behind a Cloudflare Tunnel, then check `/healthz` and the start-up log line ("Code Mode is on" or why it is off).
+  Unit file, ingress and rollback: [docs/RELAY.md](docs/RELAY.md), Run.
+- **Tests:** `cd connector && pip install -e ".[test]" && python -m pytest -q`; relay: `cd relay && pip install -e
+  ".[test]" && python -m pytest -q` (Code Mode tests also need Node 25+ and `npm ci` in `relay/sandbox`); package
+  and plugin checks in `tests/`. Local runner: `scripts/box-test.sh`.
 - **Docs:** [UNIFIED-CONNECTOR](docs/UNIFIED-CONNECTOR.md) · [AI-CONTROL](docs/AI-CONTROL.md) ·
   [MODEL-CONTROL](docs/MODEL-CONTROL.md) · [GATEWAY-CONTROLS](docs/GATEWAY-CONTROLS.md) · [TOOLS](docs/TOOLS.md) ·
   [HEALTH](docs/HEALTH.md) · [DISCORD-THREADS](docs/DISCORD-THREADS.md) · [TELEGRAM-TOPICS](docs/TELEGRAM-TOPICS.md) ·

@@ -1,0 +1,9 @@
+{
+  "name": "aiteam-relay-sandbox",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "quickjs-emscripten-core": "0.32.0",
+    "@jitl/quickjs-wasmfile-release-sync": "0.32.0"
+  }
+}

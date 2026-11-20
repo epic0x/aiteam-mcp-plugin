@@ -62,7 +62,10 @@ def discord_tools() -> list[types.Tool]:
                 "path": {"type": "string", "description": "Starts with /, e.g. /channels/123/messages"},
                 "query": {"type": "object", "description": "Query string parameters"},
                 "body": {"type": "object", "description": "JSON body for POST/PATCH/PUT"},
-                "reason": {"type": "string", "description": "Audit-log reason (X-Audit-Log-Reason)"}}}),
+                "reason": {"type": "string", "description": "Audit-log reason (X-Audit-Log-Reason)"}}},
+            # any method, DELETE included: a write that may not be safe to repeat
+            annotations=types.ToolAnnotations(title="Discord API", readOnlyHint=False, destructiveHint=True,
+                                              idempotentHint=False, openWorldHint=True)),
     ]
 
 

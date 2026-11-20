@@ -1,7 +1,8 @@
 """Multi-box relay (RELAY_MULTI_BOX=on): the relay is its own MCP server over every box in the caller's grant.
 
 Per request: the relay JWT is verified (auth.py), the grant's boxes come from `GET <issuer>/oauth/targets` (targets.py,
-30 s cache), and each tool call is exchanged for a short box token for exactly the chosen box (exchange.py) and sent to
+30 s cache), each box's tool list comes from a per-process cache (toolcache.py, warmed as soon as the boxes are known),
+and each tool call is exchanged for a short box token for exactly the chosen box (exchange.py) and sent to
 that box's own /mcp as an MCP client (boxes.py). The MCP SDK owns the client-facing transport (Streamable HTTP,
 stateless), so no box session id, stream or event id ever reaches the client or another box.
 
@@ -13,8 +14,10 @@ Box prompts and resources are not merged; only the relay's own introduction is o
 """
 from __future__ import annotations
 
+import asyncio
 import base64
 import binascii
+import hashlib
 import json
 import logging
 import re
@@ -29,8 +32,8 @@ from mcp.server.lowlevel import Server
 
 from . import __version__
 from .boxes import BoxError, BoxPool, raw_call
-from .exchange import Exchanger, InvalidGrant
-from .targets import Target, Targets, TargetsClient, TargetsMissing
+from .exchange import ExchangeError, Exchanger, InvalidGrant
+from .targets import Target, Targets, TargetsClient
 
 log = logging.getLogger("aiteam_relay.multibox")
 
@@ -44,8 +47,23 @@ INSTRUCTIONS = (
     "This connection reaches one or more aiteam.space boxes. Call boxes_list to see them and whether each one is up. "
     "Every tool takes a `box` argument (the box name from boxes_list); with a single box it can be left out. "
     "kanban_list, kanban_read and memory_read also take box=\"all\" to read every box at once. calendar_post adds a "
-    "post to a content calendar for review; it never publishes."
+    "post to a content calendar for review; it never publishes. Every result is JSON in structuredContent, with the "
+    "same JSON as text. If your client runs Code Mode itself, call the box tools directly; use execute (when this "
+    "connection offers it) when it doesn't, never both."
 )
+
+# Largest text answer a client should keep inline (Claude Code: _meta["anthropic/maxResultSizeChars"]; without it a
+# result over 50,000 characters goes to a file). Fan-out answers are capped at MAX_FANOUT_BYTES.
+MAX_RESULT_CHARS = 300_000
+BIG = {"anthropic/maxResultSizeChars": MAX_RESULT_CHARS}
+BOXES_LIST_OUTPUT = {
+    "type": "object", "required": ["count", "boxes", "truncated"],
+    "properties": {
+        "scope_rule": {"type": ["string", "null"]}, "project_name": {"type": ["string", "null"]},
+        "count": {"type": "integer"}, "answering": {"type": "integer"}, "truncated": {"type": "boolean"},
+        "boxes": {"type": "array", "items": {"type": "object", "required": ["box", "ok"], "properties": {
+            "box": {"type": "string"}, "ok": {"type": "boolean"}, "error": {"type": "string"},
+            "health": {}}}}}}
 
 
 @dataclass(frozen=True)
@@ -60,12 +78,29 @@ class Caller:
 
     @property
     def legacy(self) -> bool:
-        """A single-box grant from before scoped grants: exchange without `target`, exactly as today."""
+        """The token is a single-box grant from before scoped grants: exchange without `target`, exactly as today."""
         v = self.claims.get("grant_v")
         return v in (None, 1, "1") and bool(self.claims.get("son_id") or self.claims.get("node_id"))
 
+    def plain_exchange(self, t: Targets) -> bool:
+        """Exchange without `target` only while aiteam.space still calls the grant single-box. An owner can widen a
+        single-box connection in Settings; its live tokens keep their old claims until the next refresh, and an
+        exchange for them without `target` is refused (invalid_target). /oauth/targets says what the grant is now."""
+        return self.legacy and t.grant_v in (None, 1)
+
+    @property
+    def cache_id(self) -> str:
+        """Who is asking, for the tool list cache: account + granted scope, hashed. Never the token."""
+        c = self.claims
+        raw = json.dumps([c.get("iss"), c.get("sub"), " ".join(sorted(str(c.get("scope") or "").split()))])
+        return hashlib.sha256(raw.encode()).hexdigest()[:32]
+
 
 def _text(msg: str, *, error: bool = True, data: dict | None = None) -> types.CallToolResult:
+    """A short message result. Errors carry {"ok": false, "error": msg} as structured content too, so code that reads
+    the structured result (a client's own Code Mode) sees the same failure the text says."""
+    if data is None and error:
+        data = {"ok": False, "error": msg}
     return types.CallToolResult(content=[types.TextContent(type="text", text=msg)], structuredContent=data,
                                 isError=error)
 
@@ -73,6 +108,30 @@ def _text(msg: str, *, error: bool = True, data: dict | None = None) -> types.Ca
 def _json_result(data: dict, *, error: bool = False) -> types.CallToolResult:
     return types.CallToolResult(content=[types.TextContent(type="text", text=json.dumps(data, ensure_ascii=False))],
                                 structuredContent=data, isError=error)
+
+
+def structured(r: types.CallToolResult, tool: types.Tool | None = None) -> types.CallToolResult:
+    """A box's result with structured content, so code (a client's own Code Mode, or execute) can read it.
+
+    A box that already sends structuredContent, or whose tool declares an outputSchema (the client checks the result
+    against it), is passed on unchanged. Otherwise text that is one JSON object becomes the structured content as is;
+    any other JSON value comes as {"value": ...}; plain text as {"text": ...}. The text content is never changed."""
+    if r.structuredContent is not None or (tool is not None and tool.outputSchema is not None):
+        return r
+    texts = [c.text for c in r.content if isinstance(c, types.TextContent)]
+    if not texts or len(texts) != len(r.content):
+        return r  # images, files or resources: leave the result as the box sent it
+    joined = "\n".join(texts)
+    try:
+        val = json.loads(joined)
+    except ValueError:
+        val = None
+        data: dict = {"text": joined}
+    else:
+        data = val if isinstance(val, dict) else {"value": val}
+    if r.isError and "error" not in data:
+        data = {"ok": False, "error": joined[:2000]} if val is None else {"ok": False, "error": val}
+    return r.model_copy(update={"structuredContent": data})
 
 
 def _result_data(r: types.CallToolResult) -> Any:
@@ -113,7 +172,10 @@ def box_prop(keys: list[str], *, allow_all: bool = False, what: str = "box") -> 
     return {"type": "string", "enum": enum, "description": desc}
 
 
-def with_box(tool: types.Tool, keys: list[str], have: list[str]) -> types.Tool:
+def with_box(tool: types.Tool, keys: list[str], have: list[str], complete: bool = True) -> types.Tool:
+    """The box tool with a `box` argument. "Available on" is added only when the tool is on some boxes but not all,
+    and only when `complete` (every box's tool list is loaded): a box whose list is still loading would otherwise be
+    left off the line, and clients keep the description they were given."""
     schema = dict(tool.inputSchema or {"type": "object"})
     props = dict(schema.get("properties") or {})
     props["box"] = box_prop(keys)
@@ -126,12 +188,12 @@ def with_box(tool: types.Tool, keys: list[str], have: list[str]) -> types.Tool:
     else:
         schema.pop("required", None)
     desc = tool.description or ""
-    if len(keys) > 1 and set(have) != set(keys):
+    if complete and len(keys) > 1 and set(have) != set(keys):
         desc = (desc + "\n\n" if desc else "") + "Available on: " + ", ".join(have)
     return tool.model_copy(update={"inputSchema": schema, "description": desc})
 
 
-def native_tools(t: Targets) -> list[types.Tool]:
+def native_tools(t: Targets, per_box: float = 10.0) -> list[types.Tool]:
     keys = t.keys
     cals = [x.key for x in t.targets if x.calendar]
     ro = lambda title: types.ToolAnnotations(title=title, readOnlyHint=True, destructiveHint=False,  # noqa: E731
@@ -145,20 +207,20 @@ def native_tools(t: Targets) -> list[types.Tool]:
     return [
         types.Tool(name="boxes_list", title="Boxes in this connection",
                    description="Every box this connection reaches (name, kind, project, whether it is a content "
-                               "calendar) and a live health check of each, 5 s per box. A box that does not answer "
-                               "shows ok=false with the reason; the others still answer.",
+                               f"calendar) and a live health check of each, {per_box:g} s per box. A box that does "
+                               "not answer shows ok=false with the reason; the others still answer.",
                    inputSchema={"type": "object", "properties": {}, "additionalProperties": False},
-                   annotations=ro("Boxes in this connection")),
+                   outputSchema=BOXES_LIST_OUTPUT, annotations=ro("Boxes in this connection"), _meta=BIG),
         types.Tool(name="kanban_list", title="List task boards",
                    description="Cards on a box's task board, read-only. box=\"all\" reads every box at once and "
-                               "groups the answer per box (ok/error per box, 5 s each).",
+                               f"groups the answer per box (ok/error per box, {per_box:g} s each).",
                    inputSchema={"type": "object", "additionalProperties": False,
                                 "required": ["box"] if multi else [],
                                 "properties": {"box": fan, "status": {"type": "string", "pattern": "^[a-z_]{1,32}$"},
                                                "assignee": {"type": "string",
                                                             "pattern": "^[A-Za-z0-9_.@:-]{1,64}$"},
                                                "limit": lim(50, 200)}},
-                   annotations=ro("List task boards")),
+                   annotations=ro("List task boards"), _meta=BIG),
         types.Tool(name="kanban_read", title="Read a task card",
                    description="One card from a box's task board, read-only. box=\"all\" asks every box for that "
                                "card id and groups the answers per box.",
@@ -166,7 +228,7 @@ def native_tools(t: Targets) -> list[types.Tool]:
                                 "required": ["id", "box"] if multi else ["id"],
                                 "properties": {"box": fan, "id": {"type": "string",
                                                                   "pattern": "^[A-Za-z0-9_.:-]{1,64}$"}}},
-                   annotations=ro("Read a task card")),
+                   annotations=ro("Read a task card"), _meta=BIG),
         types.Tool(name="memory_read", title="Search box memory",
                    description="Read-only search of a box's shared memory. box=\"all\" searches every box and groups "
                                "the answers per box.",
@@ -174,7 +236,7 @@ def native_tools(t: Targets) -> list[types.Tool]:
                                 "required": ["box"] if multi else [],
                                 "properties": {"box": fan, "query": {"type": "string", "maxLength": 200},
                                                "limit": lim(20, 100)}},
-                   annotations=ro("Search box memory")),
+                   annotations=ro("Search box memory"), _meta=BIG),
         types.Tool(name="calendar_post", title="Add a post to a content calendar",
                    description="Adds a post to a content calendar in this connection for review. With date "
                                "(YYYY-MM-DD, board time zone) it waits for review on that day; without, it lands in "
@@ -229,16 +291,24 @@ def cap_rows(rows: list[dict], limit: int = MAX_FANOUT_BYTES) -> tuple[list[dict
 
 class Router:
     def __init__(self, targets: TargetsClient, exchanger: Exchanger, pool: BoxPool, *,
-                 clock: Callable[[], float] = time.time) -> None:
+                 clock: Callable[[], float] = time.time, code_mode: bool = False,
+                 code_mode_opts: dict | None = None) -> None:
         self.targets_client, self.exchanger, self.pool, self.clock = targets, exchanger, pool, clock
+        self.code = None
+        if code_mode:
+            from .codemode import CodeMode
+            self.code = CodeMode(self, **(code_mode_opts or {}))
 
     async def targets(self, c: Caller) -> Targets:
         try:
             return await self.targets_client.get(c.token, c.exp)
-        except TargetsMissing:
+        except (InvalidGrant, ExchangeError) as e:
+            # Scoped grants (v2, v3) only exist through /oauth/targets: fail closed.
             if not c.legacy:
                 raise
-        # aiteam.space without /oauth/targets yet: a single-box grant still works through today's exchange.
+            log.info("targets unavailable for a single-box grant (%s); using the plain exchange", type(e).__name__)
+        # A single-box grant never needs /oauth/targets: missing, refusing or down, it keeps today's exchange. A revoked
+        # grant is still refused there (InvalidGrant from the exchange, a 401 to the client).
         ex = await self.exchanger.get(c.token, c.exp)
         label = (urlsplit(ex.son_mcp_url).hostname or "box").split(".")[0]
         kind = "node" if c.claims.get("node_id") and not c.claims.get("son_id") else "son"
@@ -247,24 +317,51 @@ class Router:
                                calendar=label.startswith("calendar-"))], expires_at=0)
 
     # --------------------------------------------------------------- tools/list
+    def warm(self, c: Caller, t: Targets) -> dict[str, asyncio.Task]:
+        """Start loading the tool list of every box not cached (or due), in the background."""
+        return self.pool.warm(c.token, c.exp, t.targets, c.plain_exchange(t), c.cache_id)
+
+    def has_list(self, c: Caller, x: Target) -> bool:
+        hit = self.pool.cached_tools(c.cache_id, x)
+        return hit is not None and hit.tools is not None
+
     async def list_tools(self, c: Caller) -> list[types.Tool]:
         t = await self.targets(c)
-        got = await self.pool.fan_out(t.targets, lambda x: self.pool.tools(c.token, c.exp, x, c.legacy))
+        loads = self.warm(c, t)
+        # Boxes with a cached list (fresh or stale) answer at once; the others get up to list_timeout in total.
+        waiting = [loads[x.key] for x in t.targets if x.key in loads and not self.has_list(c, x)]
+        if waiting:
+            await asyncio.wait(waiting, timeout=self.pool.list_timeout)
         by_name: dict[str, list[tuple[Target, types.Tool]]] = {}
-        for target, res in got:
-            if isinstance(res, BaseException):
+        missing, stale = [], []
+        for target in t.targets:
+            hit = self.pool.cached_tools(c.cache_id, target)
+            if hit is None or hit.tools is None:
+                missing.append(target.key)
                 continue
-            for tool in res:
+            if hit.stale:
+                stale.append(target.key)
+            for tool in hit.tools:
                 if tool.name in NATIVE:
                     continue  # the relay's own tool of that name covers every box
                 by_name.setdefault(tool.name, []).append((target, tool))
+        if missing:
+            log.info("tools/list: %d of %d boxes left out (not loaded yet or failing): %s", len(missing),
+                     len(t.targets), ",".join(missing)[:500])
+        if stale:
+            log.info("tools/list: last good list served for %s", ",".join(stale)[:500])
         keys = t.keys
-        out = native_tools(t)
+        out = native_tools(t, self.pool.fanout_timeout)
+        if self.code is not None:
+            from .codemode import CODE_TOOLS, code_tools
+            if (await self.code.ready())[0]:
+                out += code_tools()
+            by_name = {k: v for k, v in by_name.items() if k not in CODE_TOOLS}
         for name in sorted(by_name):
             rows = by_name[name]
             base = rows[0][1]
             have = [x.key for x, _ in rows]
-            merged = with_box(base, keys, have)
+            merged = with_box(base, keys, have, complete=not missing)
             merged = merged.model_copy(update={"annotations": _least_safe([tl.annotations for _, tl in rows])})
             out.append(merged)
         return out
@@ -285,6 +382,8 @@ class Router:
         t = await self.targets(c)
         if name == "boxes_list":
             return await self.boxes_list(c, t)
+        if self.code is not None and name in ("search", "describe", "execute"):
+            return await self.code.call(c, t, name, args)
         if name in FANOUT_TOOLS:
             return await self.fan_tool(c, t, name, args)
         if name == "calendar_post":
@@ -293,28 +392,49 @@ class Router:
         if isinstance(target, str):
             return _text(target)
         fwd = {k: v for k, v in args.items() if k != "box"}
+        plain = c.plain_exchange(t)
+        hit = self.pool.cached_tools(c.cache_id, target)
+        if hit is None or hit.tools is None or not any(tl.name == name for tl in hit.tools):
+            # A tool this box's cached list does not show (not loaded yet, or new on the box): reload that list once,
+            # so the next tools/list has it, then route the call either way; the box answers for its own tools.
+            try:
+                async with asyncio.timeout(self.pool.box_timeout):
+                    await self.pool.tools(c.token, c.exp, target, plain, c.cache_id, force=True)
+            except (BoxError, TimeoutError):
+                pass
         try:
-            return await self.pool.call(c.token, c.exp, target, c.legacy, name, fwd, progress=progress)
+            r = await self.pool.call(c.token, c.exp, target, plain, name, fwd, progress=progress)
         except BoxError as e:
             return _text(f"{target.key}: {e}")
+        hit = self.pool.cached_tools(c.cache_id, target)
+        tool = next((tl for tl in (hit.tools or []) if tl.name == name), None) if hit is not None else None
+        return structured(r, tool)
 
-    async def _call_data(self, c: Caller, target: Target, name: str, args: dict) -> dict:
-        r = await self.pool.call(c.token, c.exp, target, c.legacy, name, args, timeout=self.pool.box_timeout)
+    async def _call_data(self, c: Caller, plain: bool, target: Target, name: str, args: dict) -> dict:
+        r = await self.pool.call(c.token, c.exp, target, plain, name, args, timeout=self.pool.fanout_timeout)
         if r.isError:
             data = _result_data(r)
             raise BoxError(data if isinstance(data, str) else json.dumps(data, ensure_ascii=False)[:500])
         return _result_data(r)
 
     async def boxes_list(self, c: Caller, t: Targets) -> types.CallToolResult:
+        plain = c.plain_exchange(t)
+        self.warm(c, t)
+
         async def health(x: Target) -> dict:
-            tools = await self.pool.tools(c.token, c.exp, x, c.legacy)
-            if any(tl.name == "box_health" for tl in tools):
-                return await self._call_data(c, x, "box_health", {})
-            # an older box without box_health: a live MCP handshake + ping is the check
+            try:
+                tools = await self.pool.tools(c.token, c.exp, x, plain, c.cache_id)  # cached: no wait once loaded
+            except BoxError:
+                tools = None  # no tool list (yet): the live ping below is the check
+            if any(tl.name == "box_health" for tl in tools or []):
+                return await self._call_data(c, plain, x, "box_health", {})
+            # an older box without box_health, or one whose list is not loaded: a live MCP handshake + ping
             start = time.monotonic()
-            await self.pool.run(c.token, c.exp, x, c.legacy, lambda s: s.send_ping(), timeout=self.pool.box_timeout)
+            await self.pool.run(c.token, c.exp, x, plain, lambda s: s.send_ping(), timeout=self.pool.fanout_timeout)
+            note = "this box has no box_health tool yet" if tools is not None else \
+                "this box has not listed its tools yet"
             return {"ok": True, "gateway_alive": True, "mcp_handshake_ms": int((time.monotonic() - start) * 1000),
-                    "note": "this box has no box_health tool yet"}
+                    "note": note}
 
         got = await self.pool.fan_out(t.targets, health)
         rows = []
@@ -329,10 +449,8 @@ class Router:
         rows, cut = cap_rows(rows)
         data = {"scope_rule": t.scope_rule, "project_name": t.project_name, "count": len(t.targets),
                 "boxes": rows, "truncated": cut or t.truncated}
-        up = sum(1 for r in rows if r.get("ok"))
-        head = f"{len(t.targets)} boxes, {up} answering."
-        return types.CallToolResult(content=[types.TextContent(type="text", text=head + "\n" + json.dumps(
-            data, ensure_ascii=False))], structuredContent=data, isError=False)
+        data["answering"] = sum(1 for r in rows if r.get("ok"))
+        return _json_result(data)
 
     async def fan_tool(self, c: Caller, t: Targets, name: str, args: dict) -> types.CallToolResult:
         fwd = {k: v for k, v in args.items() if k != "box"}
@@ -343,25 +461,26 @@ class Router:
             if isinstance(one, str):
                 return _text(one)
             try:
-                r = await self.pool.call(c.token, c.exp, one, c.legacy, FANOUT_TOOLS[name], fwd)
+                r = await self.pool.call(c.token, c.exp, one, c.plain_exchange(t), FANOUT_TOOLS[name], fwd)
             except BoxError as e:
                 return _text(f"{one.key}: {e}")
-            return r
+            return structured(r)
+        plain = c.plain_exchange(t)
+        self.warm(c, t)
+
         async def leg(x: Target) -> dict:
-            tools = await self.pool.tools(c.token, c.exp, x, c.legacy)
+            tools = await self.pool.tools(c.token, c.exp, x, plain, c.cache_id)  # cached: no wait once loaded
             if not any(tl.name == FANOUT_TOOLS[name] for tl in tools):
                 raise BoxError(f"{FANOUT_TOOLS[name]} is not available on this box")
-            return await self._call_data(c, x, FANOUT_TOOLS[name], fwd)
+            return await self._call_data(c, plain, x, FANOUT_TOOLS[name], fwd)
 
         got = await self.pool.fan_out(chosen, leg)
         rows = [({"box": x.key, "ok": False, "error": str(res)} if isinstance(res, BaseException)
                  else {"box": x.key, "ok": True, "data": res}) for x, res in got]
         rows, cut = cap_rows(rows)
         ok = sum(1 for r in rows if r["ok"])
-        data = {"box": "all", "results": rows, "truncated": cut}
-        return types.CallToolResult(content=[types.TextContent(type="text", text=f"{ok} of {len(rows)} boxes "
-                                                               "answered.\n" + json.dumps(data, ensure_ascii=False))],
-                                    structuredContent=data, isError=ok == 0 and bool(rows))
+        data = {"box": "all", "answered": ok, "results": rows, "truncated": cut}
+        return _json_result(data, error=ok == 0 and bool(rows))
 
     async def calendar_post(self, c: Caller, t: Targets, args: dict) -> types.CallToolResult:
         key = args.get("calendar")
@@ -416,7 +535,7 @@ class Router:
             return await raw_call(s, "board_add_item", item)
 
         try:
-            return await self.pool.run(c.token, c.exp, cal, c.legacy, go)
+            return await self.pool.run(c.token, c.exp, cal, c.plain_exchange(t), go)
         except BoxError as e:
             return _text(f"{cal.key}: {e}")
 
@@ -503,8 +622,11 @@ def build_server(router: Router) -> Server:
 
 async def prefetch(router: Router, c: Caller) -> None:
     """Called by the HTTP layer before the MCP layer, so a revoked or expired grant is a 401 the client acts on and an
-    unreachable aiteam.space is a 502, the same answers as the single-box proxy. Raises InvalidGrant / ExchangeError."""
-    await router.targets(c)
+    unreachable aiteam.space is a 502, the same answers as the single-box proxy. Raises InvalidGrant / ExchangeError.
+    Once the boxes are known, their tool lists start loading in the background (the client's initialize comes first,
+    so the tools/list that follows usually finds them ready)."""
+    t = await router.targets(c)
+    router.warm(c, t)
 
 
 __all__ = ["Caller", "Router", "build_server", "prefetch", "SCOPE_KEY"]

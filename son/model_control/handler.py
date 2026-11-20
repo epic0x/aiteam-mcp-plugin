@@ -143,6 +143,35 @@ def _public_route(entry: dict) -> dict:
     return {"provider": str(entry.get("provider") or ""), "model": str(entry.get("model") or "")}
 
 
+# Origin chat types whose session may be shared by several members (never "dm").
+_SHARED_CHAT_TYPES = {"group", "channel", "thread", "forum"}
+
+
+def _owner_ids(identity: dict, platform: Optional[str]) -> set[str]:
+    """owners.<email>.<platform> may be one id (str/int) or a list of ids; normalised to strings."""
+    raw = identity.get(platform) if platform else None
+    items = raw if isinstance(raw, (list, tuple)) else [raw]
+    return {str(x).strip() for x in items
+            if isinstance(x, (str, int)) and not isinstance(x, bool) and str(x).strip()}
+
+
+def _as_user(origin: Any, user_id: str) -> Any:
+    """Copy of a session origin acting as `user_id`. Grants that belonged to the original poster
+    (alt id, role grant, upstream-relay delivery marker, bot flag) are not carried over."""
+    import copy
+    import dataclasses
+    changes = {"user_id": user_id, "user_id_alt": None, "user_name": None, "is_bot": False,
+               "role_authorized": False, "delivered_via_upstream_relay": False}
+    if dataclasses.is_dataclass(origin) and not isinstance(origin, type):
+        names = {f.name for f in dataclasses.fields(origin)}
+        return dataclasses.replace(origin, **{k: v for k, v in changes.items() if k in names})
+    clone = copy.copy(origin)
+    for k, v in changes.items():
+        if k == "user_id" or hasattr(clone, k):
+            setattr(clone, k, v)
+    return clone
+
+
 class ModelControl:
     def __init__(self, runner: Any, home: Path, config: Any = None, run_blocking: Optional[Callable] = None):
         self.runner = runner
@@ -417,6 +446,34 @@ class ModelControl:
         return {"ok": True, "before": before, "order": order,
                 "applies": "next turn of every session (the gateway re-reads fallback_providers per turn)"}
 
+    def _owner_source(self, origin: Any, identity: dict, session_key: str) -> Any:
+        """The source a remote command acts as, or ControlError.
+
+        A session's stored origin is whoever posted first. In a shared group/thread session
+        (group_sessions_per_user: false, or any thread with thread_sessions_per_user: false)
+        that is often a bot or another member, so the owner must not need to equal it.
+          - origin user is one of the owner's ids: act as the origin (unchanged rule);
+          - shared group/channel/thread session: act as a copy of the origin carrying the
+            owner's id, accepted only if that copy still keys to the SAME session (so a
+            per-user session of someone else never matches) and the gateway authorizes it;
+          - anything else, including another user's DM: refused.
+        """
+        platform = getattr(getattr(origin, "platform", None), "value", None)
+        ids = _owner_ids(identity, platform)
+        if not ids:
+            raise ControlError("session is not bound to this owner's platform identity")
+        if str(getattr(origin, "user_id", "")) in ids:
+            return origin
+        if str(getattr(origin, "chat_type", "") or "").lower() not in _SHARED_CHAT_TYPES:
+            raise ControlError("session is not bound to this owner's platform identity")
+        for owner_id in sorted(ids):
+            candidate = _as_user(origin, owner_id)
+            if self.runner._session_key_for_source(candidate) != session_key:
+                continue  # per-user group session: the owner's copy is a different session
+            if self.runner._is_user_authorized_for_source(candidate):
+                return candidate
+        raise ControlError("session is shared but this owner's platform identity is not authorized for it")
+
     async def command(self, verb: str, args: dict, principal: Any) -> dict:
         """Only the socket peer supplies principal; command arguments cannot authorize themselves.
 
@@ -443,12 +500,13 @@ class ModelControl:
             current = store.lookup_by_session_key(entry.session_key)
             if current is None or current.session_id != expected_id:
                 raise ControlError("session changed before dispatch; refresh the selector")
-        source = getattr(entry, "origin", None)
-        platform = getattr(getattr(source, "platform", None), "value", None)
-        if not source or not identity.get(platform) or str(source.user_id) != str(identity[platform]):
+        origin = getattr(entry, "origin", None)
+        if not origin:
             raise ControlError("session is not bound to this owner's platform identity")
-        if self.runner._session_key_for_source(source) != entry.session_key:
+        if self.runner._session_key_for_source(origin) != entry.session_key:
             raise ControlError("session origin no longer resolves to the selected session")
+        # `source` is who the command acts as: always the owner, never the stored origin user.
+        source = self._owner_source(origin, identity, entry.session_key)
         if not self.runner._is_user_authorized_for_source(source):
             raise ControlError("gateway source authorization refused")
         if verb == "approvals_set":

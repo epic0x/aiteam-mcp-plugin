@@ -85,6 +85,7 @@ from .setup_flow import SETUP_PROMPT, setup_prompt, setup_prompt_result
 from .gateway_control import CONTROL_TOOLS, control_tools, call_control_tool
 from .team_board import NOT_ENABLED as BOARD_NOT_ENABLED, TEAM_BOARD_TOOLS, TeamBoard, team_board_tools
 from . import brief_templates
+from .tool_meta import finish_tools, structured
 
 log = logging.getLogger("aiteam.connector")
 SESSION_TOOLS = ("sessions_list", "session_status", "sessions_history", "sessions_search", "sessions_send")
@@ -652,6 +653,7 @@ class Connector:
         self.github = None if github in (False, None) else (gh_runner or GhRunner(github if isinstance(github, dict) else None))
         self.upstreams = {s.name: Upstream(s.upstream_mcp_url, s.upstream_token)
                           for s in sons if s.upstream_mcp_url and passthrough != "none"}
+        self.listed: dict[str, types.Tool] = {}  # last tools/list, by name (output schemas for `structured`)
 
     def son(self, args: dict) -> SonLink:
         name = args.pop("son", None) or self.order[0]
@@ -705,6 +707,8 @@ class Connector:
                     seen.add(t.name)
             except Exception as e:  # noqa: BLE001 - a Son being down must not hide the native tools
                 log.warning("upstream tools for %s unavailable: %s", name, type(e).__name__)
+        tools = finish_tools(tools)  # hints, result size and confirm flags for clients that run code (tool_meta.py)
+        self.listed = {t.name: t for t in tools}
         return tools
 
     async def call(self, name: str, args: dict, progress=None, caller: Optional[str] = None) -> types.CallToolResult:
@@ -1152,7 +1156,8 @@ def build_server(conn: Connector) -> Server:
             caller = req.headers.get("x-aiteam-sub") or None
         tok = CALLER.set(caller)
         try:
-            return await conn.call(name, arguments, progress, caller=caller)
+            # JSON in structuredContent plus the same JSON as text, so code can read every result (tool_meta.py)
+            return structured(await conn.call(name, arguments, progress, caller=caller), conn.listed.get(name))
         finally:
             CALLER.reset(tok)
 

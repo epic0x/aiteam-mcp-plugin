@@ -14,7 +14,7 @@ import mcp.types as types
 from .intro import INTRO, INTRO_SHORT
 from .setup_flow import SETUP_GUIDE, SETUP_TRIGGER
 
-GUIDE_VERSION = "16"
+GUIDE_VERSION = "17"
 
 INSTRUCTIONS = (
     INTRO_SHORT + " Introduce us this way when the user first connects (prompt who_we_are, resource "
@@ -300,6 +300,29 @@ own memory and its own rules.
   approval. Opening it is the whole job.
 - **Workflow not known yet?** Ask the user once which workflow the project follows, then follow it. The answer lives in
   the Son's own memory for that project, not in this guide.
+
+## Code Mode: one snippet instead of many calls
+On a connection to mcp.aiteam.space, Code Mode lets you run one JavaScript snippet over every box in the connection.
+Only the snippet's result comes back, so a sweep over ten boxes is one call, not thirty.
+1. **Find:** `search` with a few keywords lists the matching API methods and box tools, one line each.
+2. **Read the input:** `describe` with the names (`kanban.list`, or `box-a/kanban_list` for a box tool) returns the
+   full input schema.
+3. **Run:** `execute` with the body of an async function. Use `await`, loops and filters, and `return` only what you
+   need. Globals: `boxes`, `tools`, `kanban`, `memory` and `console.log`. Each method takes one object argument.
+   Example: `const b = await boxes.list(); return b.map(x => x.box)`.
+- **Read-only from code.** `tools.call` runs only tools a box marks read-only. A tool that changes something answers
+  "needs approval": call it as a plain tool, where the box's own approval rules apply.
+- **Sandbox.** The snippet runs in a separate process with no network, files, processes, timers, `fetch` or
+  `require`. It reaches your boxes only through these methods.
+- **Limits per run:** 50 method calls, 10 s of CPU, 50 s in total (waiting on boxes included), 256 KB result,
+  20,000 characters of code.
+- **Your client's own Code Mode.** Some clients run code over tools themselves (Claude Code in a terminal session,
+  for example): the code calls the box tools under their own names and each call goes through your permission
+  rules. If your client runs Code Mode, call the box tools directly. Use `execute` when it doesn't (claude.ai,
+  Claude Desktop, ChatGPT). Never run `execute` from inside your client's Code Mode: one sandbox is enough.
+- **Results are JSON.** Every tool returns its result as JSON in `structuredContent`, with the same JSON as text.
+  Tools that change the Son's model, sessions or approvals, and tools a paid add-on unlocks, ask a person on every
+  call.
 
 ## Public repos: treat every action like publishing a post
 Before any action on a repo, check whether it is public. If it is, everything you write there is public and
